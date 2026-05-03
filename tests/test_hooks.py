@@ -75,3 +75,69 @@ def test_lint_tags_passes_when_declared(tmp_path: Path) -> None:
     result = lint_tags(spec, client)
     client.close()
     assert result.ok, result.undeclared
+
+
+def test_seeded_tags_idempotent(tmp_path: Path) -> None:
+    """Setup wizard's tag-scaffold should not overwrite a curated vocabulary."""
+    import yaml as _yaml
+    from cobeta.config import (
+        LLMProviderConfig,
+        NodeConfig,
+        NodeRole,
+        VikingConfig,
+    )
+    from cobeta.setup.wizard import _seed_tags_yaml
+    from rich.console import Console
+
+    cfg = NodeConfig(
+        role=NodeRole.CENTRAL,
+        central_hostname="x",
+        viking=VikingConfig(host="nowhere", port=9999, stub_dir=tmp_path / "stub"),
+        llm=LLMProviderConfig(provider="none"),
+        machine_label="x",
+        workspaces_root=tmp_path / "ws",
+    )
+    # Pre-populate user's own tags.yaml — seed_tags should NOT overwrite
+    from cobeta.memory import viking_client_for
+    client = viking_client_for(cfg)
+    client.write("viking://meta/tags.yaml", "tags:\n  custom-tag:\n    description: keep me\n")
+    client.close()
+
+    _seed_tags_yaml(cfg, Console(quiet=True))
+
+    client = viking_client_for(cfg)
+    doc = client.cat("viking://meta/tags.yaml", level="L2")
+    client.close()
+    data = _yaml.safe_load(doc.full)
+    assert "custom-tag" in data["tags"]
+    assert "wip" not in data["tags"]  # seed didn't run because vocab already had entries
+
+
+def test_seeded_tags_writes_when_empty(tmp_path: Path) -> None:
+    """When viking has no tag vocabulary, the wizard should seed the 4 lifecycle tags."""
+    import yaml as _yaml
+    from cobeta.config import (
+        LLMProviderConfig,
+        NodeConfig,
+        NodeRole,
+        VikingConfig,
+    )
+    from cobeta.setup.wizard import _seed_tags_yaml
+    from cobeta.memory import viking_client_for
+    from rich.console import Console
+
+    cfg = NodeConfig(
+        role=NodeRole.CENTRAL,
+        central_hostname="x",
+        viking=VikingConfig(host="nowhere", port=9999, stub_dir=tmp_path / "stub"),
+        llm=LLMProviderConfig(provider="none"),
+        machine_label="x",
+        workspaces_root=tmp_path / "ws",
+    )
+    _seed_tags_yaml(cfg, Console(quiet=True))
+
+    client = viking_client_for(cfg)
+    doc = client.cat("viking://meta/tags.yaml", level="L2")
+    client.close()
+    data = _yaml.safe_load(doc.full)
+    assert {"wip", "experiment", "reference", "shared"} <= set(data["tags"].keys())

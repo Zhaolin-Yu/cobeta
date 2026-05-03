@@ -92,6 +92,16 @@ def test_overwrite_works(tmp_path: Path) -> None:
     assert ws2.path.exists()
 
 
+def test_detect_installed_handoff_targets_runs() -> None:
+    """Smoke: detect runs and returns a list (contents depend on what's on PATH)."""
+    from cobeta.workspace.handoff import detect_installed_handoff_targets
+    result = detect_installed_handoff_targets()
+    assert isinstance(result, list)
+    # All elements must be HandoffTarget instances
+    from cobeta.workspace.models import HandoffTarget
+    assert all(isinstance(t, HandoffTarget) for t in result)
+
+
 def test_kebab_validation() -> None:
     with pytest.raises(Exception):
         WorkspaceSpec(

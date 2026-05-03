@@ -21,7 +21,7 @@ from ..workspace import (
 from ..workspace.models import HandoffTarget, Stage
 from .agent import Agent, AgentResult
 from .builtin_tools import bootstrap_toolset
-from .prompts import BOOTSTRAP_SYSTEM_PROMPT
+from .prompts import BOOTSTRAP_SYSTEM_PROMPT, installed_handoff_hint
 
 
 @dataclass
@@ -116,16 +116,21 @@ def bootstrap_interactive(
             purpose = _ask(f"Stage {i:02d} purpose (one sentence)")
             stages.append(Stage(id=f"{i:02d}-{stage_name}", name=stage_name, purpose=purpose))
 
+    from ..workspace.handoff import detect_installed_handoff_targets
     available_handoffs = [
         HandoffTarget.CLAUDE_CODE,
         HandoffTarget.CODEX,
         HandoffTarget.CURSOR,
         HandoffTarget.OPENCODE,
     ]
+    installed = set(detect_installed_handoff_targets())
     click.echo("\nHandoff files write a directory description into the agent CLI's memory file.")
+    if installed:
+        click.echo(f"(detected on PATH: {', '.join(t.value for t in installed) or '(none)'})")
     chosen: list[HandoffTarget] = []
     for h in available_handoffs:
-        if _ask_bool(f"  generate handoff for {h.value}?", default=(h == HandoffTarget.CLAUDE_CODE)):
+        # Default-check installed CLIs; uncheck the rest.
+        if _ask_bool(f"  generate handoff for {h.value}?", default=(h in installed)):
             chosen.append(h)
     if not chosen:
         click.echo("(no handoffs selected — workspace will still work but no agent will know about it)")
@@ -185,7 +190,7 @@ def bootstrap_with_llm(
     agent = Agent(
         model=llm,
         tools=tools,
-        instructions=BOOTSTRAP_SYSTEM_PROMPT,
+        instructions=BOOTSTRAP_SYSTEM_PROMPT + installed_handoff_hint(),
         max_turns=max_turns,
         echo_text=True,
     )

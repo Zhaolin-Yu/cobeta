@@ -67,14 +67,21 @@ def main(ctx: click.Context) -> None:
 @click.option("--as", "role", type=click.Choice(["central", "node"]), default=None)
 @click.option("--central", "central_hostname", default=None)
 @click.option("--viking-port", default=7799, type=int)
+@click.option("--viking-stub-dir", type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="Where the local stub fallback stores its JSON. Default ~/.cobeta/viking-stub/.")
 @click.option("--llm-provider", type=click.Choice(["anthropic", "openai", "openai-compatible", "none"]), default=None)
+@click.option("--llm-model", default=None, help="Override model name (e.g. mimo-v2.5-pro).")
+@click.option("--llm-base-url", default=None, help="Override LLM endpoint base URL (for openai-compatible providers).")
 @click.option("--workspaces-root", type=click.Path(file_okay=False, path_type=Path), default=None)
 @click.option("--skip-scan", is_flag=True, default=False, help="Don't offer the read-only filesystem scan.")
 def setup(
     role: Optional[str],
     central_hostname: Optional[str],
     viking_port: int,
+    viking_stub_dir: Optional[Path],
     llm_provider: Optional[str],
+    llm_model: Optional[str],
+    llm_base_url: Optional[str],
     workspaces_root: Optional[Path],
     skip_scan: bool,
 ) -> None:
@@ -84,8 +91,11 @@ def setup(
         role_override=role,
         central_override=central_hostname,
         viking_port=viking_port,
+        viking_stub_dir=viking_stub_dir,
         workspaces_root=workspaces_root,
         llm_provider_override=llm_provider,
+        llm_model_override=llm_model,
+        llm_base_url_override=llm_base_url,
         skip_scan=skip_scan,
         console=console,
     )
@@ -210,6 +220,30 @@ def workspaces() -> None:
     """List / inspect workspaces on this machine."""
 
 
+@workspaces.command("show")
+@click.argument("name")
+def workspaces_show(name: str) -> None:
+    """Show one workspace's audit record (.cobeta.yaml) + handoff file paths."""
+    cfg = _safe_load_config()
+    if cfg is None:
+        console.print("[red]✗[/red] not installed")
+        sys.exit(1)
+    ws_path = cfg.workspaces_root / name
+    if not ws_path.is_dir():
+        raise click.ClickException(f"no workspace at {ws_path}")
+    audit_path = ws_path / ".cobeta.yaml"
+    if not audit_path.exists():
+        raise click.ClickException(f"{ws_path} is missing .cobeta.yaml — not a cobeta workspace?")
+    console.print(f"[bold cyan]{name}[/bold cyan]  ({ws_path})")
+    console.print(audit_path.read_text(encoding="utf-8"))
+    handoffs = sorted(ws_path.glob("CLAUDE.md")) + sorted(ws_path.glob("AGENTS.md")) + \
+               sorted(ws_path.glob(".cursor/rules/*.mdc")) + sorted(ws_path.glob(".opencode/*.json"))
+    if handoffs:
+        console.print("\n[bold]handoff files:[/bold]")
+        for p in handoffs:
+            console.print(f"  - {p.relative_to(ws_path)}")
+
+
 @workspaces.command("list")
 def workspaces_list() -> None:
     cfg = _safe_load_config()
@@ -248,7 +282,7 @@ def viking_find(query: str, prefix: str, limit: int) -> None:
     if cfg is None:
         console.print("[red]✗[/red] not installed")
         sys.exit(1)
-    client = viking_client_for(cfg, allow_stub=False)
+    client = viking_client_for(cfg)
     docs = client.find(query, uri_prefix=prefix, k=limit)
     client.close()
     if not docs:
@@ -267,7 +301,7 @@ def viking_tree(uri: str, depth: int) -> None:
     if cfg is None:
         console.print("[red]✗[/red] not installed")
         sys.exit(1)
-    client = viking_client_for(cfg, allow_stub=False)
+    client = viking_client_for(cfg)
     entries = client.tree(uri, depth=depth)
     client.close()
     if not entries:
@@ -285,7 +319,7 @@ def viking_cat(uri: str, level: str) -> None:
     if cfg is None:
         console.print("[red]✗[/red] not installed")
         sys.exit(1)
-    client = viking_client_for(cfg, allow_stub=False)
+    client = viking_client_for(cfg)
     doc = client.cat(uri, level=level)
     client.close()
     if doc is None:
@@ -441,8 +475,13 @@ def tags_add(tag: str, description: str, alias: tuple[str, ...]) -> None:
 
 
 @tags.command("lint")
-def tags_lint() -> None:
-    """Find tags used by workspaces but not declared in viking://meta/tags.yaml."""
+@click.option("--unused", is_flag=True, default=False, help="Also show declared tags that no workspace uses.")
+def tags_lint(unused: bool) -> None:
+    """Find tags used by workspaces but not declared in viking://meta/tags.yaml.
+
+    With --unused, also shows declared tags that no workspace currently uses
+    (candidates for retirement).
+    """
     cfg = _safe_load_config()
     if cfg is None:
         console.print("[red]✗[/red] not installed")
@@ -464,16 +503,103 @@ def tags_lint() -> None:
             used.setdefault(t, []).append(s.name)
 
     undeclared = {t: ws for t, ws in used.items() if t not in declared}
-    if not undeclared:
-        console.print("[green]✓[/green] all tags declared")
-        return
-    console.print("[yellow]undeclared tags:[/yellow]")
-    for t, ws in sorted(undeclared.items()):
-        console.print(f"  [cyan]{t}[/cyan] (used in: {', '.join(ws)})")
-    sys.exit(1)
+    declared_unused = sorted(declared - set(used.keys()))
+
+    exit_code = 0
+    if undeclared:
+        console.print("[yellow]undeclared tags (used but not in vocabulary):[/yellow]")
+        for t, ws in sorted(undeclared.items()):
+            console.print(f"  [cyan]{t}[/cyan] (used in: {', '.join(ws)})")
+        exit_code = 1
+    else:
+        console.print("[green]✓[/green] all used tags are declared")
+
+    if unused:
+        if declared_unused:
+            console.print("\n[yellow]declared but unused:[/yellow]")
+            for t in declared_unused:
+                console.print(f"  [dim]{t}[/dim]")
+        else:
+            console.print("\n[green]✓[/green] no unused declared tags")
+
+    sys.exit(exit_code)
 
 
 # ---------- scan ----------
+
+
+@main.command()
+@click.argument("source")
+@click.option(
+    "--uri",
+    default=None,
+    help="Override target viking URI; default viking://resources/<workspace>/<filename>.",
+)
+@click.option(
+    "--tag",
+    "extra_tags",
+    multiple=True,
+    help="Additional tag(s) to attach (in addition to those inherited from the workspace).",
+)
+def promote(source: str, uri: Optional[str], extra_tags: tuple[str, ...]) -> None:
+    """Promote a workspace output to viking long-term memory.
+
+    SOURCE is `<workspace-name>/<rel-path-inside-workspace>`. Supports text
+    files only (markdown / txt / json / yaml / csv / py / md / rst). Binaries
+    are refused with a friendly error — promote a summary of them instead.
+
+    Example: cobeta promote rope-longctx-comparison/stages/04-analysis/output/findings.md
+    """
+    import yaml as _yaml
+    cfg = _safe_load_config()
+    if cfg is None:
+        console.print("[red]✗[/red] not installed")
+        sys.exit(1)
+
+    if "/" not in source:
+        raise click.ClickException("SOURCE must be of the form `<workspace>/<rel-path>`")
+    workspace_name, rel = source.split("/", 1)
+    src_path = cfg.workspaces_root / workspace_name / rel
+    if not src_path.exists():
+        raise click.ClickException(f"file not found: {src_path}")
+    if not src_path.is_file():
+        raise click.ClickException(f"not a file: {src_path}")
+
+    text_exts = {".md", ".txt", ".rst", ".json", ".yaml", ".yml", ".csv", ".tsv", ".py", ".org", ".tex"}
+    if src_path.suffix.lower() not in text_exts:
+        raise click.ClickException(
+            f"refusing to promote non-text file ({src_path.suffix}). "
+            "Promote a markdown summary instead."
+        )
+
+    audit_path = cfg.workspaces_root / workspace_name / ".cobeta.yaml"
+    workspace_tags: list[str] = []
+    if audit_path.exists():
+        try:
+            audit = _yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
+            workspace_tags = list((audit.get("spec") or {}).get("tags") or [])
+        except _yaml.YAMLError:
+            pass
+    all_tags = sorted(set(workspace_tags) | set(extra_tags))
+
+    target_uri = uri or f"viking://resources/{workspace_name}/{rel}"
+    content = src_path.read_text(encoding="utf-8")
+
+    client = viking_client_for(cfg)
+    client.write(
+        target_uri,
+        content,
+        metadata={
+            "source_workspace": workspace_name,
+            "source_rel_path": rel,
+            "tags": all_tags,
+            "promoted_at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    client.close()
+    console.print(f"[green]✓[/green] promoted to [bold]{target_uri}[/bold]")
+    console.print(f"  tags: {', '.join(all_tags) if all_tags else '(none)'}")
+    console.print(f"  source: {src_path}")
 
 
 @main.command()

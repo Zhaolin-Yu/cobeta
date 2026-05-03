@@ -1,5 +1,6 @@
 from .agent import Agent, AgentResult
 from .bootstrap import BootstrapResult, bootstrap_interactive, bootstrap_with_llm
+from ..workspace.handoff import detect_installed_handoff_targets
 from .builtin_tools import (
     AskUserTool,
     GenerateWorkspaceTool,

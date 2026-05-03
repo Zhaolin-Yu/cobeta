@@ -11,6 +11,7 @@ CLI takes over.
 
 from __future__ import annotations
 
+import shutil
 from importlib.resources import files
 from pathlib import Path
 
@@ -18,6 +19,24 @@ from jinja2 import Environment, FunctionLoader, StrictUndefined
 
 from .. import __version__ as cobeta_version
 from .models import HandoffTarget, Workspace
+
+
+# Map a HandoffTarget to the binary name we'd find on PATH if the user has it.
+_BINARY_FOR_TARGET: dict[HandoffTarget, str] = {
+    HandoffTarget.CLAUDE_CODE: "claude",
+    HandoffTarget.CODEX: "codex",
+    HandoffTarget.CURSOR: "cursor",
+    HandoffTarget.OPENCODE: "opencode",
+}
+
+
+def detect_installed_handoff_targets() -> list[HandoffTarget]:
+    """Return the HandoffTargets whose CLI is installed on PATH.
+
+    Used to default-check sensible handoffs at workspace generation time so
+    the user isn't asked about CLIs they don't have.
+    """
+    return [t for t, binary in _BINARY_FOR_TARGET.items() if shutil.which(binary)]
 
 
 # (HandoffTarget) → (template_filename, output_path_relative_to_workspace)

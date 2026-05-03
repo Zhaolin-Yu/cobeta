@@ -56,4 +56,24 @@ again.
 Be terse. The user wants this to be quick. Five questions and a confirmation
 beats fifteen questions and a discussion. If a hook returns an error from
 `generate_workspace`, fix the spec and retry; never silently drop a constraint.
+
+# Handoff defaults
+
+If the user doesn't specify which agent CLIs they use, default `handoffs` to
+the set of CLIs detected on this machine's PATH (the CLI tells you in the
+seed message; if it doesn't, default to `claude-code` only and ask).
 """
+
+
+def installed_handoff_hint() -> str:
+    """Build a short addendum to the system prompt enumerating installed CLIs."""
+    from ..workspace.handoff import detect_installed_handoff_targets
+
+    installed = detect_installed_handoff_targets()
+    if not installed:
+        return "\n# Installed agent CLIs on this machine\n\n(none detected; default handoff to claude-code only)\n"
+    names = ", ".join(t.value for t in installed)
+    return (
+        f"\n# Installed agent CLIs on this machine\n\n"
+        f"PATH-detected: {names}. Default `handoffs` to this set unless the user says otherwise.\n"
+    )

@@ -39,6 +39,46 @@ from ..memory import VikingClient, viking_client_for
 from ..memory.viking_server import detect_server
 
 
+# Lifecycle tags every cobeta install seeds into viking://meta/tags.yaml on
+# first setup. Lets the very first `cobeta bootstrap` pass tag-lint without
+# the user having to declare anything.
+_SEED_TAGS = {
+    "wip": {"description": "Work in progress; default lifecycle marker"},
+    "experiment": {"description": "Exploratory work, expected to be discarded or promoted"},
+    "reference": {"description": "Long-lived reference material, not actively edited"},
+    "shared": {"description": "Intended for cross-workspace reuse"},
+}
+
+
+def _seed_tags_yaml(cfg: NodeConfig, console: Console) -> None:
+    """Write _SEED_TAGS to viking://meta/tags.yaml if no vocabulary exists yet.
+
+    Idempotent: if tags.yaml already has entries, this is a no-op (we never
+    overwrite the user's curated vocabulary).
+    """
+    import yaml as _yaml
+
+    client = viking_client_for(cfg, allow_stub=True)
+    try:
+        existing = client.cat("viking://meta/tags.yaml", level="L2")
+        if existing and existing.full:
+            try:
+                data = _yaml.safe_load(existing.full) or {}
+            except _yaml.YAMLError:
+                data = {}
+            if isinstance(data, dict) and (data.get("tags") or {}):
+                # Already curated — leave alone
+                return
+        scaffold = {"tags": _SEED_TAGS}
+        client.write("viking://meta/tags.yaml", _yaml.safe_dump(scaffold, sort_keys=False))
+        console.print(
+            f"[green]✓[/green] seeded {len(_SEED_TAGS)} lifecycle tags into "
+            f"viking://meta/tags.yaml ({', '.join(_SEED_TAGS)})"
+        )
+    finally:
+        client.close()
+
+
 @dataclass
 class BrainProbe:
     hostname: str
@@ -94,8 +134,11 @@ def run_setup_wizard(
     role_override: Optional[str] = None,
     central_override: Optional[str] = None,
     viking_port: int = 7799,
+    viking_stub_dir: Optional[Path] = None,
     workspaces_root: Optional[Path] = None,
     llm_provider_override: Optional[str] = None,
+    llm_model_override: Optional[str] = None,
+    llm_base_url_override: Optional[str] = None,
     config_path: Optional[Path] = None,
     skip_scan: bool = False,
     console: Optional[Console] = None,
@@ -158,6 +201,32 @@ def run_setup_wizard(
 
     # ---- 6. LLM provider ----
     llm_provider = llm_provider_override or _decide_llm_provider(console)
+    llm_kwargs: dict = {"provider": llm_provider}
+    if llm_provider in ("openai", "openai-compatible"):
+        llm_kwargs["api_key_env"] = "OPENAI_API_KEY"
+    elif llm_provider == "anthropic":
+        llm_kwargs["api_key_env"] = "ANTHROPIC_API_KEY"
+    if llm_model_override:
+        llm_kwargs["model"] = llm_model_override
+    if llm_base_url_override:
+        llm_kwargs["base_url"] = llm_base_url_override
+    elif llm_provider == "openai-compatible" and not llm_model_override:
+        # openai-compatible needs both base_url and model — flag if missing
+        env_url = os.environ.get("OPENAI_BASE_URL")
+        if env_url:
+            llm_kwargs["base_url"] = env_url
+        else:
+            console.print(
+                "[yellow]note:[/yellow] openai-compatible provider needs `llm.base_url` "
+                "(your endpoint) and `llm.model` set. Edit ~/.cobeta/config.yaml after "
+                "setup, or rerun with --llm-base-url and --llm-model."
+            )
+
+    # Stub dir: explicit override → workspaces_root sibling → user default
+    if viking_stub_dir is not None:
+        stub = viking_stub_dir
+    else:
+        stub = Path("~/.cobeta/viking-stub").expanduser()
 
     # ---- 7. Build & save config ----
     cfg = NodeConfig(
@@ -166,13 +235,17 @@ def run_setup_wizard(
         viking=VikingConfig(
             host=("localhost" if role == NodeRole.CENTRAL else central_hostname),
             port=viking_port,
+            stub_dir=stub,
         ),
-        llm=LLMProviderConfig(provider=llm_provider),
+        llm=LLMProviderConfig(**llm_kwargs),
         workspaces_root=workspaces_root,
         machine_label=ts.self_hostname or socket.gethostname(),
     )
     saved_path = save_node_config(cfg, config_path)
     console.print(f"[green]✓[/green] wrote {saved_path}")
+
+    # ---- 7b. Seed tag vocabulary so first bootstrap doesn't lint-fail ----
+    _seed_tags_yaml(cfg, console)
 
     # ---- 8. Per-role finishing steps ----
     outcome = SetupOutcome(config=cfg, config_path=saved_path)
@@ -283,12 +356,18 @@ def _explain_central_next_steps(console: Console) -> None:
     srv = detect_server()
     if srv.binary_present:
         console.print(
-            f"\nNext: start the OpenViking server (you control how — systemd, tmux, docker, …):"
+            f"\nNext: start the OpenViking server (daemonize via systemd, tmux, docker — your call):"
         )
         console.print(f"  [bold]{srv.suggested_command}[/bold]")
     else:
+        # Verified package name from upstream (volcengine/OpenViking):
+        #   pip install openviking         → installs openviking-server
+        #   pip install 'openviking[bot]'  → also includes the bot framework
         console.print(
-            f"\nNext: install OpenViking and start the server:\n  [bold]{srv.suggested_command}[/bold]"
+            "\nNext: install OpenViking and start the server. With uv:\n"
+            "  [bold]uv tool install openviking[/bold]\n"
+            "  [bold]openviking-server --port 7799 --bind 0.0.0.0[/bold]\n"
+            "or with pip:  [dim]pip install openviking --upgrade --force-reinstall[/dim]"
         )
 
 
