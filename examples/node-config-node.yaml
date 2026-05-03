@@ -1,0 +1,18 @@
+# Example ~/.cobeta/config.yaml for a peripheral NODE.
+#
+# Copy to ~/.cobeta/config.yaml on every non-central machine. Replace
+# `central_hostname` with your central node's tailscale hostname.
+
+version: 1
+role: node
+central_hostname: aim-patho       # your central node's tailscale hostname
+viking:
+  host: aim-patho                 # this node reaches viking over tailscale
+  port: 7799
+  timeout_s: 10.0
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  api_key_env: ANTHROPIC_API_KEY
+workspaces_root: ~/cobeta
+machine_label: laptop-xps         # human-friendly label for THIS machine

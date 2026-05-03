@@ -1,0 +1,18 @@
+---
+description: cobeta workspace — {{ spec.name }}
+globs: ["**/*"]
+alwaysApply: true
+---
+
+# {{ spec.name }}
+
+> {{ spec.intent }}
+
+Folder layout:
+- `./CONTEXT.md` (workspace router) and `./stages/<n>-<name>/CONTEXT.md` (stage contracts)
+- `./references/` (workspace L3) and `./stages/<n>-<name>/{references,output}/`
+
+Stages: {% for stage in spec.stages %}{{ stage.id }}{% if not loop.last %}, {% endif %}{% endfor %}
+Tags: {{ spec.tags | join(', ') if spec.tags else '(none)' }}
+Memory: {{ viking_memory_uri }}
+Default machine: {{ spec.machine }}

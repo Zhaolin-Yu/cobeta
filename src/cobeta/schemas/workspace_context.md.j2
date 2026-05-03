@@ -1,0 +1,22 @@
+# {{ spec.name }}
+
+> {{ spec.intent }}
+
+| key | value |
+|---|---|
+| Generated | {{ generated }} |
+| Default machine | **{{ spec.machine }}** |
+| Tags | {{ spec.tags | join(', ') if spec.tags else '(none)' }} |
+| Viking memory | `{{ viking_memory_uri }}` |
+
+## Stages
+
+| # | id | purpose |
+|---|---|---|
+{% for stage in spec.stages -%}
+| {{ stage.id.split('-')[0] }} | `{{ stage.id }}` | {{ stage.purpose }} |
+{% endfor %}
+
+Each stage's `CONTEXT.md` is its contract. Read the stage you're about to enter
+before doing anything in it. Outputs from stage N land in `stages/<N>/output/`
+and become inputs to stage N+1 unless explicitly stated otherwise.

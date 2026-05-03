@@ -1,0 +1,18 @@
+# Example ~/.cobeta/config.yaml for a CENTRAL node.
+#
+# Copy to ~/.cobeta/config.yaml on the machine that hosts your OpenViking
+# server, then run `cobeta status` to verify.
+
+version: 1
+role: central
+central_hostname: aim-patho      # this machine's tailscale hostname
+viking:
+  host: localhost                # central reaches its own viking via localhost
+  port: 7799
+  timeout_s: 10.0
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  api_key_env: ANTHROPIC_API_KEY
+workspaces_root: ~/cobeta
+machine_label: aim-patho

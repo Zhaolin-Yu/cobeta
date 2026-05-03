@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cobeta"
+version = "0.1.0"
+description = "An open-source agent framework that organizes your work into ICM workspaces and shares memory across Tailscale-linked machines via OpenViking."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "cobeta contributors" }]
+keywords = ["agent", "llm", "icm", "knowledge-management", "tailscale", "openviking"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "click>=8.1",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+    "jinja2>=3.1",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.39"]
+openai = ["openai>=1.40"]
+all = ["anthropic>=0.39", "openai>=1.40"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.5"]
+
+[tool.uv]
+package = true
+dev-dependencies = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+cobeta = "cobeta.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/yourname/cobeta"
+Documentation = "https://github.com/yourname/cobeta/tree/main/docs"
+Issues = "https://github.com/yourname/cobeta/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["cobeta*"]
+
+[tool.setuptools.package-data]
+cobeta = ["schemas/*.j2", "schemas/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

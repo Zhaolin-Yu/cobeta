@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": ["./CONTEXT.md"],
+  "metadata": {
+    "cobeta_workspace": "{{ spec.name }}",
+    "intent": {{ spec.intent | tojson }},
+    "stages": [{% for stage in spec.stages %}"{{ stage.id }}"{% if not loop.last %}, {% endif %}{% endfor %}],
+    "tags": {{ spec.tags | tojson }},
+    "viking_memory": "{{ viking_memory_uri }}",
+    "default_machine": "{{ spec.machine }}",
+    "generated_by": "cobeta {{ cobeta_version }}"
+  }
+}

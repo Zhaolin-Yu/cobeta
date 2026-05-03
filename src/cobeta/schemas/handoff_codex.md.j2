@@ -1,0 +1,32 @@
+# {{ spec.name }} (cobeta workspace)
+
+> {{ spec.intent }}
+
+## Folder purpose
+
+- `./CONTEXT.md` — workspace router
+- `./stages/<n>-<name>/CONTEXT.md` — stage contracts
+- `./stages/<n>-<name>/{references,output}/` — stage-local L3 refs and L4 artifacts
+- `./references/` — workspace-wide L3 references
+
+## Stages
+
+{% for stage in spec.stages -%}
+- `{{ stage.id }}` — {{ stage.purpose }}
+{% endfor %}
+
+## Tags
+
+{{ spec.tags | join(', ') if spec.tags else '(none)' }}
+
+## Memory
+
+- Workspace memory: `{{ viking_memory_uri }}`
+- User prefs: `viking://user/preferences/`
+
+## Execution
+
+Default machine: `{{ spec.machine }}` (`cobeta exec {{ spec.machine }} -- <cmd>` from elsewhere)
+
+---
+Auto-written by cobeta {{ cobeta_version }}.

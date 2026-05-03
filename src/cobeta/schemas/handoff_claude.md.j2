@@ -1,0 +1,47 @@
+# {{ spec.name }} (cobeta workspace)
+
+This directory is a **cobeta-generated ICM workspace**. You can work here with
+Claude Code as you normally would; this file is the handoff cobeta wrote so
+you immediately know what the directory means.
+
+## What this workspace is
+
+> {{ spec.intent }}
+
+## Folder layout & purpose
+
+| Path | Purpose |
+|---|---|
+| `./CONTEXT.md` | Layer-1 router for this workspace |
+| `./stages/<n>-<name>/CONTEXT.md` | Layer-2 contract for stage n |
+| `./stages/<n>-<name>/references/` | Stage-local Layer-3 references |
+| `./stages/<n>-<name>/output/` | Stage-local Layer-4 outputs |
+| `./references/` | Workspace-wide Layer-3 references |
+
+## Stages in this workspace
+
+{% for stage in spec.stages -%}
+- **`{{ stage.id }}`** — {{ stage.purpose }}
+{% endfor %}
+
+## Tags in scope
+
+{{ spec.tags | join(', ') if spec.tags else '(none — declare in viking://meta/tags.yaml before using)' }}
+
+## Where memory lives
+
+- This workspace's memory: `{{ viking_memory_uri }}`
+- User-level preferences (read often, write rarely): `viking://user/preferences/`
+- Cross-workspace concepts: `viking://resources/concepts/`
+
+To query: `cobeta viking find <expr>` (or use the `viking-cli` tool directly).
+
+## Default execution machine
+
+`{{ spec.machine }}` — if you're working on another machine and need artifacts
+from this one, use `cobeta exec {{ spec.machine }} -- <command>`.
+
+---
+
+> Auto-written by cobeta {{ cobeta_version }}. Edit the workspace freely; this
+> file is regenerated only by `cobeta workspace rehandoff <path>`.
