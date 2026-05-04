@@ -16,7 +16,7 @@ CLI can pick up. After that, cobeta gets out of the way.
 |---|---|---|
 | [Tailscale](https://tailscale.com) | Private mesh network so all your machines see each other without VPN headaches | Every machine |
 | [OpenViking](https://github.com/volcengine/OpenViking) | Hierarchical memory store accessed via `viking://` URIs (L0/L1/L2 tiered loading) | One **central** machine; others connect over Tailscale |
-| An LLM API (Anthropic, OpenAI, …) | Powers the bootstrap agent | Every machine, via `$ANTHROPIC_API_KEY` etc. |
+| **An OpenAI-compatible LLM endpoint** | Required. Powers the bootstrap agent and the LLM scanner. Any OpenAI chat-completions-compatible URL + API key works (OpenAI, MiMo, vLLM, Together, Groq, Ollama, LM Studio, OpenRouter, …) | Every machine, via `$OPENAI_API_KEY` |
 
 ## Architecture in one picture
 

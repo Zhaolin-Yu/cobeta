@@ -53,26 +53,39 @@ class VikingConfig(BaseModel):
 
 
 class LLMProviderConfig(BaseModel):
-    """How this node talks to an LLM. Optional — bootstrap can run without LLM."""
+    """How this node talks to an LLM. cobeta requires this — the bootstrap
+    agent and the LLM scanner are the framework's primary surfaces.
 
-    provider: Literal["anthropic", "openai", "openai-compatible", "none"] = "none"
+    The canonical/required configuration is `openai-compatible`: a base URL
+    and an env-var-housed API key. Any provider speaking the OpenAI chat
+    completions schema works (OpenAI, MiMo, vLLM, Together, Groq, Ollama,
+    LM Studio, OpenRouter, etc.).
+
+    `anthropic` and `none` are kept as escape hatches for advanced users but
+    the setup wizard does not offer them. `none` mode disables LLM-driven
+    bootstrap and the LLM scanner; only `--interactive` bootstrap and
+    `--heuristic` scan still work.
+    """
+
+    provider: Literal["anthropic", "openai", "openai-compatible", "none"] = "openai-compatible"
     model: Optional[str] = None
     api_key_env: str = Field(
-        default="ANTHROPIC_API_KEY",
+        default="OPENAI_API_KEY",
         description="Name of the env var holding the API key. Never store the key in config.",
     )
     base_url: Optional[str] = Field(
         default=None,
         description=(
-            "Override the API base URL. Only meaningful for openai-compatible providers "
-            "(e.g. MiMo, vLLM, Together, Groq). Vanilla OpenAI ignores this."
+            "API base URL ending in /v1. REQUIRED for openai-compatible (your "
+            "provider's endpoint, e.g. https://api.openai.com/v1, "
+            "https://token-plan-sgp.xiaomimimo.com/v1, http://localhost:11434/v1 for ollama)."
         ),
     )
 
     @field_validator("model")
     @classmethod
     def _model_default(cls, v: Optional[str], info) -> Optional[str]:
-        provider = info.data.get("provider", "none")
+        provider = info.data.get("provider", "openai-compatible")
         if v is None and provider == "anthropic":
             return "claude-sonnet-4-6"
         if v is None and provider in ("openai", "openai-compatible"):

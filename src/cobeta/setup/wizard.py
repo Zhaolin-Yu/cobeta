@@ -139,8 +139,10 @@ def run_setup_wizard(
     llm_provider_override: Optional[str] = None,
     llm_model_override: Optional[str] = None,
     llm_base_url_override: Optional[str] = None,
+    llm_api_key_env_override: Optional[str] = None,
     config_path: Optional[Path] = None,
     skip_scan: bool = False,
+    skip_llm_validation: bool = False,
     console: Optional[Console] = None,
 ) -> SetupOutcome:
     """Run the interactive setup wizard. Writes ~/.cobeta/config.yaml.
@@ -199,28 +201,53 @@ def run_setup_wizard(
             )
             workspaces_root = Path(str(workspaces_root) + "-data")
 
-    # ---- 6. LLM provider ----
-    llm_provider = llm_provider_override or _decide_llm_provider(console)
+    # ---- 6. LLM provider — REQUIRED ----
+    # cobeta's primary surface (bootstrap agent, LLM scanner) needs this.
+    # The wizard only offers openai-compatible; advanced users can edit
+    # ~/.cobeta/config.yaml manually for anthropic/none if they want a
+    # degraded-UX install.
+    llm_provider = llm_provider_override or "openai-compatible"
     llm_kwargs: dict = {"provider": llm_provider}
-    if llm_provider in ("openai", "openai-compatible"):
-        llm_kwargs["api_key_env"] = "OPENAI_API_KEY"
-    elif llm_provider == "anthropic":
-        llm_kwargs["api_key_env"] = "ANTHROPIC_API_KEY"
-    if llm_model_override:
-        llm_kwargs["model"] = llm_model_override
-    if llm_base_url_override:
-        llm_kwargs["base_url"] = llm_base_url_override
-    elif llm_provider == "openai-compatible" and not llm_model_override:
-        # openai-compatible needs both base_url and model — flag if missing
-        env_url = os.environ.get("OPENAI_BASE_URL")
-        if env_url:
-            llm_kwargs["base_url"] = env_url
+
+    if llm_provider == "openai-compatible":
+        # Base URL — must end in /v1 (or compatible)
+        if llm_base_url_override:
+            base_url = llm_base_url_override
         else:
-            console.print(
-                "[yellow]note:[/yellow] openai-compatible provider needs `llm.base_url` "
-                "(your endpoint) and `llm.model` set. Edit ~/.cobeta/config.yaml after "
-                "setup, or rerun with --llm-base-url and --llm-model."
+            env_url = os.environ.get("OPENAI_BASE_URL", "")
+            base_url = click.prompt(
+                "OpenAI-compatible base URL (e.g. https://api.openai.com/v1, "
+                "https://token-plan-sgp.xiaomimimo.com/v1, http://localhost:11434/v1)",
+                default=env_url or "https://api.openai.com/v1",
             )
+        llm_kwargs["base_url"] = base_url
+
+        # Model name
+        if llm_model_override:
+            model = llm_model_override
+        else:
+            model = click.prompt(
+                "Model name on that endpoint (e.g. gpt-4o-mini, mimo-v2.5-pro, llama3:8b)",
+                default="gpt-4o-mini",
+            )
+        llm_kwargs["model"] = model
+
+        # API key env var
+        api_key_env = llm_api_key_env_override or click.prompt(
+            "Env var holding the API key",
+            default="OPENAI_API_KEY",
+        )
+        llm_kwargs["api_key_env"] = api_key_env
+    elif llm_provider == "anthropic":
+        llm_kwargs["api_key_env"] = llm_api_key_env_override or "ANTHROPIC_API_KEY"
+        if llm_model_override:
+            llm_kwargs["model"] = llm_model_override
+    elif llm_provider == "none":
+        console.print(
+            "[yellow]warning:[/yellow] provider=none means LLM-driven bootstrap and "
+            "the LLM scanner are disabled. You can only use --interactive bootstrap "
+            "and --heuristic scan. This is a degraded mode."
+        )
 
     # Stub dir: explicit override → workspaces_root sibling → user default
     if viking_stub_dir is not None:
@@ -243,6 +270,18 @@ def run_setup_wizard(
     )
     saved_path = save_node_config(cfg, config_path)
     console.print(f"[green]✓[/green] wrote {saved_path}")
+
+    # ---- 7a. Validate LLM endpoint (REQUIRED unless skipped) ----
+    if not skip_llm_validation and cfg.llm.provider in ("openai", "openai-compatible"):
+        ok, detail = _smoke_test_openai_compat(cfg, console)
+        if not ok:
+            console.print(
+                f"[red]✗[/red] LLM endpoint validation failed: {detail}\n"
+                f"  Setup completed BUT cobeta's primary surfaces won't work yet.\n"
+                f"  Fix: export ${cfg.llm.api_key_env}=... in your shell, then run "
+                f"`cobeta status` to verify.\n"
+                f"  Skip this check with `cobeta setup --skip-llm-validation`."
+            )
 
     # ---- 7b. Seed tag vocabulary so first bootstrap doesn't lint-fail ----
     _seed_tags_yaml(cfg, console)
@@ -339,17 +378,47 @@ def _pick_central_hostname(
     )
 
 
-def _decide_llm_provider(console: Console) -> str:
-    guess = "none"
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        guess = "anthropic"
-    elif os.environ.get("OPENAI_API_KEY"):
-        guess = "openai"
-    return click.prompt(
-        "Default LLM provider for the bootstrap agent",
-        type=click.Choice(["anthropic", "openai", "none"]),
-        default=guess,
-    )
+def _smoke_test_openai_compat(cfg: NodeConfig, console: Console) -> tuple[bool, str]:
+    """Try to hit the LLM endpoint to verify URL + key actually work.
+
+    Uses /models (cheaper than a chat completion). Returns (ok, detail).
+    """
+    api_key = os.environ.get(cfg.llm.api_key_env)
+    if not api_key:
+        return False, f"${cfg.llm.api_key_env} not set in environment"
+    if not cfg.llm.base_url:
+        return False, "llm.base_url is empty"
+
+    import httpx
+    url = f"{cfg.llm.base_url.rstrip('/')}/models"
+    try:
+        r = httpx.get(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10.0,
+        )
+    except httpx.RequestError as e:
+        return False, f"could not reach {url}: {e}"
+    if r.status_code != 200:
+        return False, f"{url} returned {r.status_code}: {r.text[:200]}"
+
+    # Optionally check the configured model is in the catalog
+    try:
+        data = r.json()
+        models = [m.get("id", "") for m in data.get("data", [])]
+        if cfg.llm.model and cfg.llm.model not in models and models:
+            console.print(
+                f"[yellow]note:[/yellow] configured model '{cfg.llm.model}' not in "
+                f"endpoint's catalog ({len(models)} models available). May work "
+                f"anyway if the endpoint is permissive."
+            )
+        elif cfg.llm.model and cfg.llm.model in models:
+            console.print(f"[green]✓[/green] LLM endpoint reachable; model '{cfg.llm.model}' confirmed")
+            return True, "ok"
+    except Exception:
+        pass
+    console.print(f"[green]✓[/green] LLM endpoint reachable")
+    return True, "ok"
 
 
 def _explain_central_next_steps(console: Console) -> None:

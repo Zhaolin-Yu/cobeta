@@ -40,20 +40,33 @@ The `cobeta` binary lands on your `$PATH` automatically. Verify:
 cobeta --version
 ```
 
-## 4. Set your LLM API key (every machine)
+## 4. Set your LLM API key (every machine, REQUIRED)
+
+cobeta's primary surfaces (the bootstrap agent, the LLM scanner) need an
+OpenAI-compatible endpoint. Any provider speaking the OpenAI chat-completions
+protocol works:
 
 ```bash
-# Anthropic Claude
-export ANTHROPIC_API_KEY=sk-ant-...
-
-# OR OpenAI / OpenAI-compatible (e.g. MiMo, vLLM, Together, Groq, …)
-export OPENAI_API_KEY=...
-export OPENAI_BASE_URL=https://your-endpoint/v1     # only for non-OpenAI endpoints
+export OPENAI_API_KEY=sk-...
+# Optional: only set if your endpoint isn't api.openai.com
+export OPENAI_BASE_URL=https://your-provider/v1
 ```
 
-(Without an API key, `cobeta bootstrap` falls back to a fully-interactive CLI
-flow where it asks you questions directly. The framework still works — it just
-doesn't autosuggest stage breakdowns or workspace names.)
+Concrete examples:
+
+| Provider | base URL | model name example |
+|---|---|---|
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| Xiaomi MiMo | `https://token-plan-sgp.xiaomimimo.com/v1` | `mimo-v2.5-pro` |
+| Together AI | `https://api.together.xyz/v1` | `meta-llama/Llama-3-70b-chat-hf` |
+| Groq | `https://api.groq.com/openai/v1` | `llama3-70b-8192` |
+| Ollama (local) | `http://localhost:11434/v1` | `llama3:8b` |
+| OpenRouter | `https://openrouter.ai/api/v1` | `anthropic/claude-sonnet-4` |
+| LM Studio (local) | `http://localhost:1234/v1` | (whatever you loaded) |
+
+Without a key, you can still use `cobeta scan --heuristic` and `cobeta
+bootstrap --interactive`, but those are degraded-UX fallbacks — the framework
+is designed around the agent-driven path.
 
 ## 5. Run the setup wizard
 
@@ -68,18 +81,27 @@ The wizard:
    existing brain
 3. **Asks you**: is this machine the brain, or do you want to point at the one
    it found?
-4. **Branches** based on your answer:
-   - **Brain (central)**: scaffolds the role; tells you how to start the
-     OpenViking server
-   - **Node**: confirms which existing brain you're pointing at and validates
-     connectivity
-5. **Optionally scans** your filesystem (read-only) to seed a tag vocabulary
+4. **Asks for your OpenAI-compatible LLM endpoint**: base URL, model, key env var
+5. **Validates the LLM endpoint** by hitting `/v1/models` once. Refuses to
+   declare setup successful if the URL+key combination doesn't work
+   (override with `--skip-llm-validation` if you know what you're doing)
+6. **Optionally scans** your filesystem (read-only) to seed a tag vocabulary
    and a `viking://user/inventory` summary
 
 The wizard writes `~/.cobeta/config.yaml`. Verify with:
 
 ```bash
 cobeta status
+```
+
+Non-interactive setup (good for shell scripts and provisioning):
+
+```bash
+cobeta setup --as central \
+  --llm-base-url https://api.openai.com/v1 \
+  --llm-model gpt-4o-mini \
+  --llm-api-key-env OPENAI_API_KEY \
+  --skip-scan
 ```
 
 ## 6. Start the OpenViking server (brain only)
@@ -152,6 +174,7 @@ All over Tailscale; falls back to plain `ssh` if Tailscale isn't installed.
 | Symptom | Fix |
 |---|---|
 | `cobeta status` says viking unreachable | On the brain: `curl localhost:7799/health`. From a node: `tailscale ping <brain-hostname>`. Check the server is running. |
-| `cobeta bootstrap` falls back to interactive when you wanted LLM mode | Verify `$ANTHROPIC_API_KEY` / `$OPENAI_API_KEY` is set in the same shell |
+| `cobeta scan` says `$OPENAI_API_KEY not set` | Either `export OPENAI_API_KEY=...` then re-run, OR pass `--heuristic` to use the free deterministic scanner. |
+| `cobeta setup` LLM validation failed | Run `curl -H "Authorization: Bearer $OPENAI_API_KEY" $OPENAI_BASE_URL/models` directly to debug. Most common: wrong URL (missing `/v1` suffix) or expired key. |
 | `cobeta setup` can't find `tailscale` | Install Tailscale first (step 1). cobeta will run single-machine-only without it. |
-| OpenAI-compatible endpoint (e.g. MiMo) not working | Set both `OPENAI_API_KEY` and `OPENAI_BASE_URL`. Hit `/v1/models` with curl to confirm credentials & list valid model names; put one in `~/.cobeta/config.yaml` under `llm.model`. |
+| Want to switch endpoints later | Edit `~/.cobeta/config.yaml` directly (under `llm:`) or re-run `cobeta setup` with new flags. |

@@ -69,9 +69,13 @@ def main(ctx: click.Context) -> None:
 @click.option("--viking-port", default=7799, type=int)
 @click.option("--viking-stub-dir", type=click.Path(file_okay=False, path_type=Path), default=None,
               help="Where the local stub fallback stores its JSON. Default ~/.cobeta/viking-stub/.")
-@click.option("--llm-provider", type=click.Choice(["anthropic", "openai", "openai-compatible", "none"]), default=None)
-@click.option("--llm-model", default=None, help="Override model name (e.g. mimo-v2.5-pro).")
-@click.option("--llm-base-url", default=None, help="Override LLM endpoint base URL (for openai-compatible providers).")
+@click.option("--llm-provider", type=click.Choice(["anthropic", "openai", "openai-compatible", "none"]), default=None,
+              help="Default: openai-compatible (required for primary cobeta features).")
+@click.option("--llm-model", default=None, help="Model name on the endpoint (e.g. gpt-4o-mini, mimo-v2.5-pro).")
+@click.option("--llm-base-url", default=None, help="OpenAI-compatible endpoint URL ending in /v1.")
+@click.option("--llm-api-key-env", default=None, help="Env var holding the API key (default OPENAI_API_KEY).")
+@click.option("--skip-llm-validation", is_flag=True, default=False,
+              help="Skip the post-setup /models probe. Use only when you know the endpoint is reachable.")
 @click.option("--workspaces-root", type=click.Path(file_okay=False, path_type=Path), default=None)
 @click.option("--skip-scan", is_flag=True, default=False, help="Don't offer the read-only filesystem scan.")
 def setup(
@@ -82,10 +86,12 @@ def setup(
     llm_provider: Optional[str],
     llm_model: Optional[str],
     llm_base_url: Optional[str],
+    llm_api_key_env: Optional[str],
+    skip_llm_validation: bool,
     workspaces_root: Optional[Path],
     skip_scan: bool,
 ) -> None:
-    """Interactive setup. Detects tailscale + brain, decides role, writes config."""
+    """Interactive setup. Detects tailscale + brain, requires LLM endpoint, writes config."""
 
     run_setup_wizard(
         role_override=role,
@@ -96,7 +102,9 @@ def setup(
         llm_provider_override=llm_provider,
         llm_model_override=llm_model,
         llm_base_url_override=llm_base_url,
+        llm_api_key_env_override=llm_api_key_env,
         skip_scan=skip_scan,
+        skip_llm_validation=skip_llm_validation,
         console=console,
     )
 
@@ -141,17 +149,35 @@ def status() -> None:
         )
     client.close()
 
-    if cfg.llm.provider in ("anthropic",):
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            console.print("[green]✓[/green] $ANTHROPIC_API_KEY set")
-        else:
-            console.print("[yellow]·[/yellow] $ANTHROPIC_API_KEY not set — bootstrap falls back to interactive mode")
-    elif cfg.llm.provider in ("openai", "openai-compatible"):
+    if cfg.llm.provider == "none":
+        console.print(
+            "[red]✗[/red] llm.provider=none — LLM-driven bootstrap and LLM scan disabled. "
+            "Run `cobeta setup` to configure an OpenAI-compatible endpoint."
+        )
+    else:
         env_key = cfg.llm.api_key_env
-        if os.environ.get(env_key):
-            console.print(f"[green]✓[/green] ${env_key} set")
+        if not os.environ.get(env_key):
+            console.print(
+                f"[red]✗[/red] ${env_key} not set — primary cobeta features need it. "
+                f"`export {env_key}=...` then re-run."
+            )
         else:
-            console.print(f"[yellow]·[/yellow] ${env_key} not set — bootstrap falls back to interactive mode")
+            console.print(f"[green]✓[/green] ${env_key} set")
+            # Quick reachability probe for openai-compatible endpoints
+            if cfg.llm.provider in ("openai", "openai-compatible") and cfg.llm.base_url:
+                import httpx
+                try:
+                    r = httpx.get(
+                        f"{cfg.llm.base_url.rstrip('/')}/models",
+                        headers={"Authorization": f"Bearer {os.environ[env_key]}"},
+                        timeout=5.0,
+                    )
+                    if r.status_code == 200:
+                        console.print(f"[green]✓[/green] LLM endpoint {cfg.llm.base_url} reachable")
+                    else:
+                        console.print(f"[yellow]·[/yellow] LLM endpoint returned {r.status_code}")
+                except Exception as e:
+                    console.print(f"[yellow]·[/yellow] LLM endpoint unreachable: {e}")
 
     summaries = inspect_existing_workspaces(cfg.workspaces_root)
     console.print(f"workspaces:      {len(summaries)} on this machine")
@@ -604,27 +630,27 @@ def promote(source: str, uri: Optional[str], extra_tags: tuple[str, ...]) -> Non
 
 @main.command()
 @click.option("--root", "roots", multiple=True, type=click.Path(exists=True, file_okay=False, path_type=Path), help="Root(s) to scan; default: ~/projects, ~/code, ~/Documents (whichever exist).")
-@click.option("--depth", default=2, type=int)
+@click.option("--depth", default=2, type=int, help="(--heuristic mode) Walk depth.")
 @click.option("--descend-into-projects", is_flag=True, default=False,
-              help="By default, don't recurse into dirs that already look like a project (avoids vendored stdlib pollution). Pass this to override.")
-@click.option("--llm", is_flag=True, default=False,
-              help="Use the LLM-driven scanner instead of heuristic. Costs tokens; better at semantic interpretation and cross-project patterns. Requires LLM provider configured.")
+              help="(--heuristic mode) Recurse into project-like dirs.")
+@click.option("--heuristic", is_flag=True, default=False,
+              help="Use the deterministic heuristic scanner instead of the LLM. Free + fast but worse at semantic clustering.")
 @click.option("--max-turns", default=40, type=int, help="(LLM mode) Hard cap on agent turns.")
 @click.option("--write", is_flag=True, default=False, help="After review, write to viking (tag vocab + per-project structural records). Without this flag, dry-run.")
 def scan(
     roots: tuple[Path, ...],
     depth: int,
     descend_into_projects: bool,
-    llm: bool,
+    heuristic: bool,
     max_turns: int,
     write: bool,
 ) -> None:
     import re
     """Read-only filesystem scan that suggests a tag vocabulary.
 
-    Default mode is heuristic (fast, free, deterministic). Pass --llm for the
-    agent-driven scanner (slower, costs tokens, smarter cross-project pattern
-    inference). Pass --write to persist results to viking.
+    Default mode is **LLM-driven** (slower, costs tokens, smarter cross-project
+    pattern inference). Pass --heuristic for the deterministic free version.
+    Pass --write to persist results to viking.
     """
     cfg = _safe_load_config()
     if cfg is None:
@@ -639,10 +665,10 @@ def scan(
                 candidates.append(home / sub)
         roots = tuple(candidates) or (home,)
 
-    if llm:
-        _scan_llm(cfg, roots, max_turns=max_turns, write_to_viking=write)
-    else:
+    if heuristic:
         _scan_heuristic(cfg, roots, depth, descend_into_projects, write_to_viking=write)
+    else:
+        _scan_llm(cfg, roots, max_turns=max_turns, write_to_viking=write)
 
 
 def _scan_heuristic(
@@ -698,13 +724,15 @@ def _scan_llm(
 
     if cfg.llm.provider == "none":
         raise click.ClickException(
-            "LLM scan needs an LLM provider. Run `cobeta setup --llm-provider ...` "
-            "or edit ~/.cobeta/config.yaml."
+            "LLM scan needs an LLM provider. Re-run `cobeta setup` to configure an "
+            "OpenAI-compatible endpoint, or pass `--heuristic` to use the free "
+            "(less smart) scanner."
         )
     api_key = os.environ.get(cfg.llm.api_key_env)
     if not api_key:
         raise click.ClickException(
-            f"LLM scan needs ${cfg.llm.api_key_env} set in the environment."
+            f"${cfg.llm.api_key_env} not set in the environment. `export {cfg.llm.api_key_env}=...` "
+            f"first, or pass `--heuristic` to skip the LLM."
         )
 
     console.print(f"scanning (LLM = {cfg.llm.model}): " + ", ".join(str(r) for r in roots))
