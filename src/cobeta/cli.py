@@ -605,8 +605,10 @@ def promote(source: str, uri: Optional[str], extra_tags: tuple[str, ...]) -> Non
 @main.command()
 @click.option("--root", "roots", multiple=True, type=click.Path(exists=True, file_okay=False, path_type=Path), help="Root(s) to scan; default: ~/projects, ~/code, ~/Documents (whichever exist).")
 @click.option("--depth", default=2, type=int)
+@click.option("--descend-into-projects", is_flag=True, default=False,
+              help="By default, don't recurse into dirs that already look like a project (avoids vendored stdlib pollution). Pass this to override.")
 @click.option("--write", is_flag=True, default=False, help="After review, write to viking. Without this flag, dry-run.")
-def scan(roots: tuple[Path, ...], depth: int, write: bool) -> None:
+def scan(roots: tuple[Path, ...], depth: int, descend_into_projects: bool, write: bool) -> None:
     """Read-only filesystem scan that suggests a tag vocabulary.
 
     Pass --write to actually persist suggestions to viking://meta/tags.yaml.
@@ -616,7 +618,12 @@ def scan(roots: tuple[Path, ...], depth: int, write: bool) -> None:
         console.print("[red]✗[/red] not installed")
         sys.exit(1)
 
-    from .scanner import build_inventory_summary, suggest_tags, walk_filesystem_readonly
+    from .scanner import (
+        build_inventory_summary,
+        render_per_project_table,
+        suggest_tags,
+        walk_filesystem_readonly,
+    )
 
     if not roots:
         home = Path("~").expanduser()
@@ -626,17 +633,23 @@ def scan(roots: tuple[Path, ...], depth: int, write: bool) -> None:
                 candidates.append(home / sub)
         roots = tuple(candidates) or (home,)
 
-    console.print(f"scanning (depth {depth}): " + ", ".join(str(r) for r in roots))
-    fingerprints = walk_filesystem_readonly(list(roots), max_depth=depth)
+    console.print(f"scanning (depth {depth}, reading project metadata): " + ", ".join(str(r) for r in roots))
+    fingerprints = walk_filesystem_readonly(
+        list(roots),
+        max_depth=depth,
+        descend_into_projects=descend_into_projects,
+    )
     console.print(f"  → {len(fingerprints)} directories fingerprinted")
 
     suggestions = suggest_tags(fingerprints)
     summary = build_inventory_summary(fingerprints)
 
     console.print(f"\n[bold]inventory:[/bold] {summary}")
+    console.print("\n[bold]projects found:[/bold]")
+    console.print(render_per_project_table(fingerprints))
     console.print("\n[bold]suggested tag vocabulary:[/bold]")
     for tag, why in sorted(suggestions.items()):
-        console.print(f"  [cyan]{tag:<22}[/cyan] {why}")
+        console.print(f"  [cyan]{tag:<24}[/cyan] {why}")
 
     if not write:
         console.print("\n(dry run — pass --write to persist to viking)")
