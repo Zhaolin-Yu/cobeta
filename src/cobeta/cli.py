@@ -607,24 +607,29 @@ def promote(source: str, uri: Optional[str], extra_tags: tuple[str, ...]) -> Non
 @click.option("--depth", default=2, type=int)
 @click.option("--descend-into-projects", is_flag=True, default=False,
               help="By default, don't recurse into dirs that already look like a project (avoids vendored stdlib pollution). Pass this to override.")
+@click.option("--llm", is_flag=True, default=False,
+              help="Use the LLM-driven scanner instead of heuristic. Costs tokens; better at semantic interpretation and cross-project patterns. Requires LLM provider configured.")
+@click.option("--max-turns", default=40, type=int, help="(LLM mode) Hard cap on agent turns.")
 @click.option("--write", is_flag=True, default=False, help="After review, write to viking (tag vocab + per-project structural records). Without this flag, dry-run.")
-def scan(roots: tuple[Path, ...], depth: int, descend_into_projects: bool, write: bool) -> None:
+def scan(
+    roots: tuple[Path, ...],
+    depth: int,
+    descend_into_projects: bool,
+    llm: bool,
+    max_turns: int,
+    write: bool,
+) -> None:
     import re
     """Read-only filesystem scan that suggests a tag vocabulary.
 
-    Pass --write to actually persist suggestions to viking://meta/tags.yaml.
+    Default mode is heuristic (fast, free, deterministic). Pass --llm for the
+    agent-driven scanner (slower, costs tokens, smarter cross-project pattern
+    inference). Pass --write to persist results to viking.
     """
     cfg = _safe_load_config()
     if cfg is None:
         console.print("[red]✗[/red] not installed")
         sys.exit(1)
-
-    from .scanner import (
-        build_inventory_summary,
-        render_per_project_table,
-        suggest_tags,
-        walk_filesystem_readonly,
-    )
 
     if not roots:
         home = Path("~").expanduser()
@@ -634,7 +639,28 @@ def scan(roots: tuple[Path, ...], depth: int, descend_into_projects: bool, write
                 candidates.append(home / sub)
         roots = tuple(candidates) or (home,)
 
-    console.print(f"scanning (depth {depth}, reading project metadata): " + ", ".join(str(r) for r in roots))
+    if llm:
+        _scan_llm(cfg, roots, max_turns=max_turns, write_to_viking=write)
+    else:
+        _scan_heuristic(cfg, roots, depth, descend_into_projects, write_to_viking=write)
+
+
+def _scan_heuristic(
+    cfg: NodeConfig,
+    roots: tuple[Path, ...],
+    depth: int,
+    descend_into_projects: bool,
+    write_to_viking: bool,
+) -> None:
+    import re
+    from .scanner import (
+        build_inventory_summary,
+        render_per_project_table,
+        suggest_tags,
+        walk_filesystem_readonly,
+    )
+
+    console.print(f"scanning (heuristic, depth {depth}, reading project metadata): " + ", ".join(str(r) for r in roots))
     fingerprints = walk_filesystem_readonly(
         list(roots),
         max_depth=depth,
@@ -651,6 +677,177 @@ def scan(roots: tuple[Path, ...], depth: int, descend_into_projects: bool, write
     console.print("\n[bold]suggested tag vocabulary:[/bold]")
     for tag, why in sorted(suggestions.items()):
         console.print(f"  [cyan]{tag:<24}[/cyan] {why}")
+
+    if not write_to_viking:
+        console.print("\n(dry run — pass --write to persist to viking)")
+        return
+
+    _persist_heuristic_to_viking(cfg, fingerprints, suggestions, summary, roots)
+
+
+def _scan_llm(
+    cfg: NodeConfig,
+    roots: tuple[Path, ...],
+    *,
+    max_turns: int,
+    write_to_viking: bool,
+) -> None:
+    import os
+    from .llm import get_provider
+    from .scanner import llm_scan
+
+    if cfg.llm.provider == "none":
+        raise click.ClickException(
+            "LLM scan needs an LLM provider. Run `cobeta setup --llm-provider ...` "
+            "or edit ~/.cobeta/config.yaml."
+        )
+    api_key = os.environ.get(cfg.llm.api_key_env)
+    if not api_key:
+        raise click.ClickException(
+            f"LLM scan needs ${cfg.llm.api_key_env} set in the environment."
+        )
+
+    console.print(f"scanning (LLM = {cfg.llm.model}): " + ", ".join(str(r) for r in roots))
+    console.print(f"  agent will: list dirs → read self-description files → submit fingerprints → submit report")
+
+    provider = get_provider(
+        cfg.llm.provider,
+        model=cfg.llm.model,
+        base_url=cfg.llm.base_url,
+        api_key_env=cfg.llm.api_key_env,
+    )
+    try:
+        report = llm_scan(list(roots), provider, max_turns=max_turns, echo_text=False)
+    except RuntimeError as e:
+        raise click.ClickException(f"LLM scan failed: {e}")
+
+    console.print(f"\n[bold]inventory:[/bold] {report.inventory_summary}")
+    console.print(f"\n[bold]projects fingerprinted:[/bold] {len(report.projects)}")
+    for proj in report.projects:
+        head = f"{proj.get('path', '?')}   ({proj.get('name', '?')})"
+        console.print(head)
+        if proj.get("description"):
+            console.print(f"  └─ {proj['description'][:140]}")
+        bits: list[str] = []
+        if proj.get("languages"):
+            bits.append("/".join(proj["languages"]))
+        if proj.get("keywords"):
+            bits.append(f"keywords: {', '.join(proj['keywords'][:6])}")
+        if proj.get("top_level_dirs"):
+            bits.append(f"top: {', '.join(proj['top_level_dirs'][:6])}")
+        if bits:
+            console.print("     " + " · ".join(bits))
+        if proj.get("notes"):
+            console.print(f"     [dim]{proj['notes'][:160]}[/dim]")
+
+    if report.layout_patterns:
+        console.print(f"\n[bold]layout patterns:[/bold]")
+        for cluster, dirs in report.layout_patterns.items():
+            console.print(f"  [cyan]{cluster:<24}[/cyan] {', '.join(dirs)}")
+
+    console.print(f"\n[bold]suggested tag vocabulary:[/bold]")
+    for tag, why in sorted(report.suggested_tags.items()):
+        console.print(f"  [cyan]{tag:<24}[/cyan] {why}")
+
+    if not write_to_viking:
+        console.print("\n(dry run — pass --write to persist to viking)")
+        return
+
+    _persist_llm_to_viking(cfg, report, roots)
+
+
+def _persist_heuristic_to_viking(cfg, fingerprints, suggestions, summary, roots) -> None:
+    import re
+    import yaml as _yaml
+
+    client = viking_client_for(cfg)
+    doc = client.cat("viking://meta/tags.yaml", level="L2")
+    existing = _yaml.safe_load(doc.full) if doc and doc.full else {"tags": {}}
+    if not isinstance(existing, dict):
+        existing = {"tags": {}}
+    existing.setdefault("tags", {})
+    for tag, why in suggestions.items():
+        existing["tags"].setdefault(tag, {"description": why})
+    client.write("viking://meta/tags.yaml", _yaml.safe_dump(existing, sort_keys=False))
+
+    project_count = 0
+    for fp in fingerprints:
+        if not fp.is_project_like:
+            continue
+        project_count += 1
+        slug = fp.label.lower().replace("_", "-").replace(" ", "-")
+        slug = re.sub(r"[^a-z0-9-]", "", slug) or fp.path.name
+        record = {
+            "path": str(fp.path),
+            "name": fp.project_name or fp.path.name,
+            "description": fp.description,
+            "languages": fp.languages,
+            "keywords": fp.keywords,
+            "dependencies": fp.dependencies[:15],
+            "git_remote": fp.git_remote,
+            "top_level_dirs": fp.top_level_dirs,
+            "dominant_bucket": fp.dominant_bucket,
+        }
+        client.write(
+            f"viking://user/inventory/projects/{slug}",
+            _yaml.safe_dump(record, sort_keys=False, allow_unicode=True),
+            metadata={"path": str(fp.path), "scan_mode": "heuristic"},
+        )
+
+    client.write(
+        "viking://user/inventory",
+        summary,
+        metadata={"scanned_roots": [str(r) for r in roots], "scan_mode": "heuristic"},
+    )
+    client.close()
+    console.print(
+        f"[green]✓[/green] wrote tag vocabulary, inventory summary, and "
+        f"{project_count} per-project records to viking"
+    )
+
+
+def _persist_llm_to_viking(cfg, report, roots) -> None:
+    import re
+    import yaml as _yaml
+
+    client = viking_client_for(cfg)
+
+    doc = client.cat("viking://meta/tags.yaml", level="L2")
+    existing = _yaml.safe_load(doc.full) if doc and doc.full else {"tags": {}}
+    if not isinstance(existing, dict):
+        existing = {"tags": {}}
+    existing.setdefault("tags", {})
+    for tag, why in report.suggested_tags.items():
+        existing["tags"].setdefault(tag, {"description": why})
+    client.write("viking://meta/tags.yaml", _yaml.safe_dump(existing, sort_keys=False))
+
+    for proj in report.projects:
+        name = proj.get("name") or "unnamed"
+        slug = name.lower().replace("_", "-").replace(" ", "-")
+        slug = re.sub(r"[^a-z0-9-]", "", slug) or "unnamed"
+        client.write(
+            f"viking://user/inventory/projects/{slug}",
+            _yaml.safe_dump(proj, sort_keys=False, allow_unicode=True),
+            metadata={"path": proj.get("path", ""), "scan_mode": "llm"},
+        )
+
+    if report.layout_patterns:
+        client.write(
+            "viking://user/inventory/layout-patterns",
+            _yaml.safe_dump(report.layout_patterns, sort_keys=False, allow_unicode=True),
+            metadata={"scan_mode": "llm"},
+        )
+
+    client.write(
+        "viking://user/inventory",
+        report.inventory_summary,
+        metadata={"scanned_roots": [str(r) for r in roots], "scan_mode": "llm"},
+    )
+    client.close()
+    console.print(
+        f"[green]✓[/green] wrote tag vocabulary, inventory summary, "
+        f"{len(report.projects)} per-project records, and layout patterns to viking"
+    )
 
     if not write:
         console.print("\n(dry run — pass --write to persist to viking)")
