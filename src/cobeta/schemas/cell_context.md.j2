@@ -1,0 +1,45 @@
+# {{ cell.name }}
+
+> {{ cell.purpose }}
+
+{% if cell.expected_structure -%}
+**Expected contents:** {{ cell.expected_structure }}
+{% endif %}
+
+## Inputs
+
+{% if cell.inputs -%}
+| Source | Why |
+|---|---|
+{% for inp in cell.inputs -%}
+| `{{ inp.source }}` | {{ inp.why }} |
+{% endfor %}
+{%- else -%}
+_No declared inputs. This cell is self-contained or its inputs are obvious from context._
+{%- endif %}
+
+## Outputs
+
+{% if cell.outputs -%}
+| Name | Purpose |
+|---|---|
+{% for out in cell.outputs -%}
+| `{{ out.name }}` | {{ out.purpose }} |
+{% endfor %}
+{%- else -%}
+_No declared outputs yet. Add rows when the shape is known._
+{%- endif %}
+
+{% if cell.sub_cells -%}
+## Sub-cells
+
+{% for sub in cell.sub_cells -%}
+- `./{{ sub.name }}/` — {{ sub.purpose }}
+{% endfor %}
+{%- endif %}
+
+## Discipline
+
+- Don't add files outside what "Expected contents" describes without updating this CONTEXT.md first.
+- Don't create a new sub-folder under this cell without giving it a CONTEXT.md (or marking it explicitly as terminal storage).
+- Memory for this cell: see the workspace `CONTEXT.md` memory plan section.

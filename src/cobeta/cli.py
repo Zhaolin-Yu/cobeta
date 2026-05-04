@@ -607,8 +607,9 @@ def promote(source: str, uri: Optional[str], extra_tags: tuple[str, ...]) -> Non
 @click.option("--depth", default=2, type=int)
 @click.option("--descend-into-projects", is_flag=True, default=False,
               help="By default, don't recurse into dirs that already look like a project (avoids vendored stdlib pollution). Pass this to override.")
-@click.option("--write", is_flag=True, default=False, help="After review, write to viking. Without this flag, dry-run.")
+@click.option("--write", is_flag=True, default=False, help="After review, write to viking (tag vocab + per-project structural records). Without this flag, dry-run.")
 def scan(roots: tuple[Path, ...], depth: int, descend_into_projects: bool, write: bool) -> None:
+    import re
     """Read-only filesystem scan that suggests a tag vocabulary.
 
     Pass --write to actually persist suggestions to viking://meta/tags.yaml.
@@ -665,13 +666,43 @@ def scan(roots: tuple[Path, ...], depth: int, descend_into_projects: bool, write
     for tag, why in suggestions.items():
         existing["tags"].setdefault(tag, {"description": why})
     client.write("viking://meta/tags.yaml", _yaml.safe_dump(existing, sort_keys=False))
+
+    # Per-project structural fingerprints — what bootstrap agent reads to learn
+    # the user's folder-layout conventions.
+    project_count = 0
+    for fp in fingerprints:
+        if not fp.is_project_like:
+            continue
+        project_count += 1
+        slug = fp.label.lower().replace("_", "-").replace(" ", "-")
+        slug = re.sub(r"[^a-z0-9-]", "", slug) or fp.path.name
+        record = {
+            "path": str(fp.path),
+            "name": fp.project_name or fp.path.name,
+            "description": fp.description,
+            "languages": fp.languages,
+            "keywords": fp.keywords,
+            "dependencies": fp.dependencies[:15],  # cap to keep records small
+            "git_remote": fp.git_remote,
+            "top_level_dirs": fp.top_level_dirs,
+            "dominant_bucket": fp.dominant_bucket,
+        }
+        client.write(
+            f"viking://user/inventory/projects/{slug}",
+            _yaml.safe_dump(record, sort_keys=False, allow_unicode=True),
+            metadata={"path": str(fp.path)},
+        )
+
     client.write(
         "viking://user/inventory",
         summary,
         metadata={"scanned_roots": [str(r) for r in roots]},
     )
     client.close()
-    console.print(f"[green]✓[/green] wrote tag vocabulary and inventory to viking")
+    console.print(
+        f"[green]✓[/green] wrote tag vocabulary, inventory summary, and "
+        f"{project_count} per-project records to viking"
+    )
 
 
 if __name__ == "__main__":

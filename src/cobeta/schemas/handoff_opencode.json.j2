@@ -4,9 +4,11 @@
   "metadata": {
     "cobeta_workspace": "{{ spec.name }}",
     "intent": {{ spec.intent | tojson }},
-    "stages": [{% for stage in spec.stages %}"{{ stage.id }}"{% if not loop.last %}, {% endif %}{% endfor %}],
+    "rationale": {{ spec.rationale | tojson }},
+    "cells": [{% for cell in spec.cells %}"{{ cell.name }}"{% if not loop.last %}, {% endif %}{% endfor %}],
     "tags": {{ spec.tags | tojson }},
-    "viking_memory": "{{ viking_memory_uri }}",
+    "viking_memory_root": "{{ viking_memory_uri }}",
+    "memory_sections": [{% for m in spec.memory_sections %}"{{ m.uri }}"{% if not loop.last %}, {% endif %}{% endfor %}],
     "default_machine": "{{ spec.machine }}",
     "generated_by": "cobeta {{ cobeta_version }}"
   }

@@ -1,11 +1,11 @@
 """Deterministic workspace generator.
 
-Given a `WorkspaceSpec` (validated by pydantic) and a target root directory,
-produce the full ICM workspace tree on disk: workspace `CONTEXT.md`, per-stage
-`CONTEXT.md`, output / references directories, audit record, handoff files.
+Given a `WorkspaceSpec` (validated by pydantic), recursively materialize the
+cell tree on disk. Each cell becomes a folder with a `CONTEXT.md` (unless
+`has_context_md=False`); sub_cells become nested folders.
 
-This is **pure deterministic code**. No LLM. No agent freedom. The agent's job
-ends when it produces the WorkspaceSpec; this code takes over from there.
+This is **pure deterministic code**. No LLM. The agent's job ends at producing
+a valid spec; this code takes over from there.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from jinja2 import Environment, FunctionLoader, StrictUndefined
 
 from .. import __version__ as cobeta_version
 from .handoff import write_handoff_files
-from .models import Workspace, WorkspaceSpec
+from .models import Cell, Workspace, WorkspaceSpec
 
 
 def _load_template(name: str) -> str:
@@ -36,6 +36,22 @@ def _env() -> Environment:
     )
 
 
+def _create_cell(parent_dir: Path, cell: Cell, env: Environment) -> None:
+    """Create one cell's folder + CONTEXT.md, then recurse into sub-cells."""
+    cell_dir = parent_dir / cell.name
+    cell_dir.mkdir(parents=True, exist_ok=True)
+
+    if cell.has_context_md:
+        ctx = env.get_template("cell_context.md.j2").render(cell=cell)
+        (cell_dir / "CONTEXT.md").write_text(ctx, encoding="utf-8")
+    else:
+        # Non-contract terminal storage — just keep the dir tracked
+        (cell_dir / ".gitkeep").write_text("")
+
+    for sub in cell.sub_cells:
+        _create_cell(cell_dir, sub, env)
+
+
 def generate_workspace(
     spec: WorkspaceSpec,
     workspaces_root: Path,
@@ -46,7 +62,6 @@ def generate_workspace(
 
     Raises FileExistsError if the target exists and `overwrite=False`.
     """
-
     target = workspaces_root.expanduser() / spec.name
     if target.exists() and not overwrite:
         raise FileExistsError(f"workspace path already exists: {target}")
@@ -65,24 +80,13 @@ def generate_workspace(
     )
     (target / "CONTEXT.md").write_text(workspace_ctx, encoding="utf-8")
 
-    # ---- Per-stage scaffolding (Layer 2 + dirs for Layer 3/4) ----
-    for stage in spec.stages:
-        sd = target / "stages" / stage.id
-        sd.mkdir(parents=True, exist_ok=True)
-        (sd / "references").mkdir(exist_ok=True)
-        (sd / "output").mkdir(exist_ok=True)
-        (sd / "references" / ".gitkeep").write_text("")
-        (sd / "output" / ".gitkeep").write_text("")
-        ctx_text = env.get_template("stage_context.md.j2").render(stage=stage)
-        (sd / "CONTEXT.md").write_text(ctx_text, encoding="utf-8")
-
-    # ---- Workspace-wide references dir ----
-    (target / "references").mkdir(exist_ok=True)
-    (target / "references" / ".gitkeep").write_text("")
+    # ---- Recursive cell tree ----
+    for cell in spec.cells:
+        _create_cell(target, cell, env)
 
     # ---- Audit record ----
     audit = {
-        "schema_version": 1,
+        "schema_version": 2,  # bumped: cells replaced stages
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "cobeta_version": cobeta_version,
         "spec": spec.model_dump(mode="json"),

@@ -87,6 +87,10 @@ class DirectoryFingerprint:
     languages: list[str] = field(default_factory=list)  # python/js/rust/go/...
     git_remote: Optional[str] = None         # anonymized
 
+    # Structural fingerprint: immediate child directory names (sans leading dot)
+    # — used by bootstrap agent to learn user's folder-layout conventions.
+    top_level_dirs: list[str] = field(default_factory=list)
+
     @property
     def dominant_bucket(self) -> Optional[str]:
         if not self.extension_buckets:
@@ -338,6 +342,23 @@ def _fingerprint(d: Path, max_files: int = 500) -> DirectoryFingerprint:
     except (PermissionError, OSError):
         pass
 
+    # Capture immediate sub-dir names — the project's structural fingerprint
+    top_level: list[str] = []
+    try:
+        with os.scandir(d) as it:
+            for entry in it:
+                if entry.is_dir(follow_symlinks=False):
+                    nm = entry.name
+                    if nm.startswith("."):
+                        continue
+                    if nm in ("node_modules", "venv", ".venv", "build", "dist",
+                             "target", "__pycache__", "site-packages", "pkg",
+                             "vendor", ".cache"):
+                        continue
+                    top_level.append(nm)
+    except (PermissionError, OSError):
+        pass
+
     fp = DirectoryFingerprint(
         path=d,
         name_tokens=_tokenize(d.name),
@@ -346,6 +367,7 @@ def _fingerprint(d: Path, max_files: int = 500) -> DirectoryFingerprint:
         has_dotcobeta=has_dotcobeta,
         file_count=file_count,
         extension_buckets=extension_buckets,
+        top_level_dirs=sorted(top_level),
     )
 
     # Read project self-description files (the deep signal)

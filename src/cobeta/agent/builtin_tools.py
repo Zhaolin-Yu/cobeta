@@ -19,7 +19,7 @@ from ..workspace import (
     generate_workspace,
     inspect_existing_workspaces,
 )
-from ..workspace.models import HandoffTarget, Stage
+from ..workspace.models import Cell, CellInput, CellOutput, HandoffTarget, MemorySection
 from .tool import Tool, ToolPermission
 
 
@@ -121,13 +121,60 @@ class ListExistingWorkspacesTool(Tool):
                     "name": s.name,
                     "intent": s.intent,
                     "tags": s.tags,
-                    "stages": s.stages,
                     "machine": s.machine,
                     "generated_at": s.generated_at,
                 }
                 for s in summaries
             ]
         )
+
+
+class ReadUserInventoryTool(Tool):
+    """Read per-project structural fingerprints from viking://user/inventory/projects/.
+
+    The bootstrap agent calls this FIRST to learn what folder layouts the user
+    typically uses across their existing projects, then proposes a layout for
+    the new workspace that's consistent with their conventions.
+    """
+
+    name = "read_user_inventory"
+    description = (
+        "Read per-project structural fingerprints (top-level dirs, languages, "
+        "deps, descriptions) from past scans. Use this BEFORE proposing a "
+        "workspace layout to learn the user's conventions."
+    )
+    permission = ToolPermission.READ
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "filter_lang": {
+                "type": "string",
+                "description": 'Optional: only return projects of this language (e.g. "python").',
+            },
+        },
+    }
+
+    def __init__(self, viking: VikingClient):
+        self.viking = viking
+
+    def execute(self, filter_lang: str = "") -> str:
+        entries = self.viking.tree("viking://user/inventory/projects/", depth=2)
+        out: list[dict] = []
+        for uri in entries:
+            doc = self.viking.cat(uri, level="L2")
+            if doc is None or not doc.full:
+                continue
+            try:
+                import yaml as _yaml
+                data = _yaml.safe_load(doc.full) or {}
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            if filter_lang and filter_lang not in (data.get("languages") or []):
+                continue
+            out.append({"uri": uri, **data})
+        return json.dumps(out)
 
 
 # ---------- user interaction ----------
@@ -154,12 +201,61 @@ class AskUserTool(Tool):
 # ---------- terminal action ----------
 
 
+# JSON-schema definition for a Cell, used inside generate_workspace.
+# Pulled out for readability; matches the pydantic Cell model.
+_CELL_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "description": "kebab-case folder name"},
+        "purpose": {"type": "string"},
+        "expected_structure": {"type": "string", "default": ""},
+        "inputs": {
+            "type": "array",
+            "default": [],
+            "items": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "why": {"type": "string"},
+                },
+                "required": ["source", "why"],
+            },
+        },
+        "outputs": {
+            "type": "array",
+            "default": [],
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "purpose": {"type": "string"},
+                },
+                "required": ["name", "purpose"],
+            },
+        },
+        "has_context_md": {"type": "boolean", "default": True},
+        "sub_cells": {
+            "type": "array",
+            "default": [],
+            # Recursive: same shape as parent Cell. JSON schema doesn't easily
+            # express recursion; LLMs handle this fine when the description
+            # says "same shape as parent".
+            "items": {"type": "object"},
+            "description": "Sub-cells with the same Cell schema as the parent.",
+        },
+    },
+    "required": ["name", "purpose"],
+}
+
+
 class GenerateWorkspaceTool(Tool):
     name = "generate_workspace"
     description = (
         "Generate the workspace from a fully-specified WorkspaceSpec. "
-        "Validates via pydantic and runs all post-generation hooks. "
-        "On hook failure, returns errors to you so you can fix and retry."
+        "Pydantic-validates the spec, runs all post-generation hooks. "
+        "On hook failure, returns errors to you so you can fix and retry. "
+        "The 'cells' field is the workspace's folder tree — every folder "
+        "is an ICM cell with its own purpose / inputs / outputs."
     )
     permission = ToolPermission.TERMINAL
     input_schema = {
@@ -167,20 +263,40 @@ class GenerateWorkspaceTool(Tool):
         "properties": {
             "name": {"type": "string"},
             "intent": {"type": "string"},
+            "rationale": {
+                "type": "string",
+                "description": (
+                    "One paragraph: WHY this layout. Reference user's existing "
+                    "project conventions (read via read_user_inventory) when "
+                    "applicable."
+                ),
+                "default": "",
+            },
             "tags": {"type": "array", "items": {"type": "string"}},
             "machine": {"type": "string"},
-            "stages": {
+            "cells": {
                 "type": "array",
+                "items": _CELL_JSON_SCHEMA,
+                "description": (
+                    "Top-level folders. Each is a Cell. Cells can nest via "
+                    "sub_cells (same schema). Use short content-typed names "
+                    "(paper, data, src) — not numbered stages — unless the "
+                    "user explicitly wants a linear pipeline."
+                ),
+                "default": [],
+            },
+            "memory_sections": {
+                "type": "array",
+                "default": [],
                 "items": {
                     "type": "object",
                     "properties": {
-                        "id": {"type": "string"},
-                        "name": {"type": "string"},
+                        "uri": {"type": "string"},
                         "purpose": {"type": "string"},
+                        "write_pattern": {"type": "string", "default": "as-needed"},
                     },
-                    "required": ["id", "name", "purpose"],
+                    "required": ["uri", "purpose"],
                 },
-                "minItems": 1,
             },
             "handoffs": {
                 "type": "array",
@@ -191,7 +307,7 @@ class GenerateWorkspaceTool(Tool):
                 "default": ["claude-code"],
             },
         },
-        "required": ["name", "intent", "machine", "stages"],
+        "required": ["name", "intent", "machine"],
     }
 
     def __init__(self, cfg: NodeConfig, viking: VikingClient):
@@ -203,8 +319,10 @@ class GenerateWorkspaceTool(Tool):
         name: str,
         intent: str,
         machine: str,
-        stages: list[dict[str, str]],
+        rationale: str = "",
         tags: list[str] | None = None,
+        cells: list[dict] | None = None,
+        memory_sections: list[dict] | None = None,
         handoffs: list[str] | None = None,
     ) -> str:
         try:
@@ -213,10 +331,12 @@ class GenerateWorkspaceTool(Tool):
                 intent=intent,
                 tags=tags or [],
                 machine=machine,
-                stages=[
-                    Stage(id=s["id"], name=s["name"], purpose=s["purpose"]) for s in stages
+                cells=[_dict_to_cell(c) for c in (cells or [])],
+                memory_sections=[
+                    MemorySection(**m) for m in (memory_sections or [])
                 ],
                 handoffs=[HandoffTarget(h) for h in (handoffs or ["claude-code"])],
+                rationale=rationale,
             )
         except Exception as e:
             return json.dumps({"error": f"spec validation failed: {e}"})
@@ -256,15 +376,38 @@ class GenerateWorkspaceTool(Tool):
                 }
             )
 
+        # Flatten the cell tree into a list of paths for the report
+        def _flatten(cell: Cell, prefix: str = "") -> list[str]:
+            here = f"{prefix}{cell.name}/"
+            return [here] + [p for sub in cell.sub_cells for p in _flatten(sub, here)]
+
+        all_cells: list[str] = []
+        for c in ws.spec.cells:
+            all_cells.extend(_flatten(c))
+
         return json.dumps(
             {
                 "ok": True,
                 "path": str(ws.path),
                 "viking_memory": ws.viking_memory_uri,
                 "handoff_files": [str(p) for p in ws.handoff_files],
-                "stages": [s.id for s in ws.spec.stages],
+                "cells": all_cells,
             }
         )
+
+
+def _dict_to_cell(d: dict) -> Cell:
+    """Recursively convert a dict (from agent JSON) into a Cell."""
+    sub = [_dict_to_cell(s) for s in (d.get("sub_cells") or [])]
+    return Cell(
+        name=d["name"],
+        purpose=d["purpose"],
+        expected_structure=d.get("expected_structure", ""),
+        inputs=[CellInput(**i) for i in (d.get("inputs") or [])],
+        outputs=[CellOutput(**o) for o in (d.get("outputs") or [])],
+        has_context_md=d.get("has_context_md", True),
+        sub_cells=sub,
+    )
 
 
 # ---------- preset bundles ----------
@@ -275,14 +418,15 @@ def bootstrap_toolset(
 ) -> list[Tool]:
     """Return the canonical bootstrap-mode tool list.
 
-    Read-only access to viking + filesystem inventory + ask_user + terminal
-    generate_workspace. No write access to viking.
+    Read-only access to viking + per-project inventory + filesystem inventory +
+    ask_user + terminal generate_workspace. No write access to viking.
     """
     return [
         VikingFindTool(viking),
         VikingTreeTool(viking),
         VikingCatTool(viking),
         ListExistingWorkspacesTool(cfg),
+        ReadUserInventoryTool(viking),
         AskUserTool(ask_fn),
         GenerateWorkspaceTool(cfg, viking),
     ]

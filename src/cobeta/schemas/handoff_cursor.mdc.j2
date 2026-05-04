@@ -8,11 +8,13 @@ alwaysApply: true
 
 > {{ spec.intent }}
 
-Folder layout:
-- `./CONTEXT.md` (workspace router) and `./stages/<n>-<name>/CONTEXT.md` (stage contracts)
-- `./references/` (workspace L3) and `./stages/<n>-<name>/{references,output}/`
+Layout (don't sprawl):
+{% for cell in spec.cells -%}
+- `{{ cell.name }}/` — {{ cell.purpose }}
+{% endfor %}
 
-Stages: {% for stage in spec.stages %}{{ stage.id }}{% if not loop.last %}, {% endif %}{% endfor %}
+Each cell has its own CONTEXT.md. Read it before doing work in that cell.
+
 Tags: {{ spec.tags | join(', ') if spec.tags else '(none)' }}
-Memory: {{ viking_memory_uri }}
+Memory root: {{ viking_memory_uri }}
 Default machine: {{ spec.machine }}

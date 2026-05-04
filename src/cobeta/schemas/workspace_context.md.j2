@@ -7,16 +7,53 @@
 | Generated | {{ generated }} |
 | Default machine | **{{ spec.machine }}** |
 | Tags | {{ spec.tags | join(', ') if spec.tags else '(none)' }} |
-| Viking memory | `{{ viking_memory_uri }}` |
+| Viking memory root | `{{ viking_memory_uri }}` |
 
-## Stages
+{% if spec.rationale -%}
+## Why this layout
 
-| # | id | purpose |
+{{ spec.rationale }}
+{%- endif %}
+
+## Cell tree
+
+{% macro render_cell(cell, depth=0) -%}
+{{ '  ' * depth }}- `{{ cell.name }}/` — {{ cell.purpose }}
+{% for sub in cell.sub_cells -%}
+{{ render_cell(sub, depth + 1) }}
+{%- endfor %}
+{%- endmacro -%}
+{% if spec.cells -%}
+{% for cell in spec.cells -%}
+{{ render_cell(cell) }}
+{%- endfor %}
+{%- else -%}
+_(empty workspace — pure scratchpad)_
+{%- endif %}
+
+Each folder has its own `CONTEXT.md` declaring purpose / inputs / outputs.
+Read the relevant cell's `CONTEXT.md` before adding files in it.
+
+## Memory plan
+
+{% if spec.memory_sections -%}
+| URI | Purpose | Write when |
 |---|---|---|
-{% for stage in spec.stages -%}
-| {{ stage.id.split('-')[0] }} | `{{ stage.id }}` | {{ stage.purpose }} |
+{% for m in spec.memory_sections -%}
+| `{{ m.uri }}` | {{ m.purpose }} | {{ m.write_pattern }} |
+{% endfor %}
+{%- else -%}
+_No memory sections planned. All memory falls back to `{{ viking_memory_uri }}`._
+{%- endif %}
+
+## Routing
+
+When in doubt about which cell's `CONTEXT.md` to read first, match the task
+to a cell:
+
+{% for cell in spec.cells -%}
+- {{ cell.name }} work → read `./{{ cell.name }}/CONTEXT.md`
 {% endfor %}
 
-Each stage's `CONTEXT.md` is its contract. Read the stage you're about to enter
-before doing anything in it. Outputs from stage N land in `stages/<N>/output/`
-and become inputs to stage N+1 unless explicitly stated otherwise.
+Don't add a new top-level folder without amending this workspace's CONTEXT.md
+first. The layout IS the design.

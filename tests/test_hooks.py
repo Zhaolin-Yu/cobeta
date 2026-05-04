@@ -1,4 +1,4 @@
-"""Tests for the validation hooks."""
+"""Tests for the validation hooks (Cell-tree model)."""
 
 from __future__ import annotations
 
@@ -9,21 +9,21 @@ import pytest
 from cobeta.hooks import check_handoff_files, lint_tags, validate_workspace_on_disk
 from cobeta.memory import VikingClient
 from cobeta.workspace import generate_workspace
-from cobeta.workspace.models import HandoffTarget, Stage, WorkspaceSpec
+from cobeta.workspace.models import Cell, HandoffTarget, WorkspaceSpec
 
 
-def _spec(name="demo", tags=None, handoffs=None) -> WorkspaceSpec:
+def _spec(name="demo", tags=None, handoffs=None, cells=None) -> WorkspaceSpec:
     return WorkspaceSpec(
         name=name,
         intent="x",
         tags=tags or [],
         machine="aim-patho",
-        stages=[Stage(id="01-go", name="go", purpose="do it")],
+        cells=cells if cells is not None else [Cell(name="notes", purpose="thinking")],
         handoffs=handoffs or [HandoffTarget.CLAUDE_CODE],
     )
 
 
-def test_validate_detects_missing_context(tmp_path: Path) -> None:
+def test_validate_detects_missing_workspace_context(tmp_path: Path) -> None:
     spec = _spec()
     ws = generate_workspace(spec, tmp_path)
     (ws.path / "CONTEXT.md").unlink()
@@ -32,14 +32,26 @@ def test_validate_detects_missing_context(tmp_path: Path) -> None:
     assert any("CONTEXT.md" in e for e in result.errors)
 
 
-def test_validate_detects_missing_stage_dir(tmp_path: Path) -> None:
-    spec = _spec()
+def test_validate_detects_missing_cell_dir(tmp_path: Path) -> None:
+    spec = _spec(cells=[Cell(name="notes", purpose="x"), Cell(name="src", purpose="y")])
     ws = generate_workspace(spec, tmp_path)
     import shutil
-    shutil.rmtree(ws.path / "stages" / "01-go")
+    shutil.rmtree(ws.path / "src")
     result = validate_workspace_on_disk(ws.path)
     assert not result.ok
-    assert any("stages/01-go" in e for e in result.errors)
+    assert any("src" in e for e in result.errors)
+
+
+def test_validate_detects_missing_nested_cell_context(tmp_path: Path) -> None:
+    spec = _spec(cells=[
+        Cell(name="paper", purpose="writeup",
+             sub_cells=[Cell(name="figures", purpose="plots")]),
+    ])
+    ws = generate_workspace(spec, tmp_path)
+    (ws.path / "paper" / "figures" / "CONTEXT.md").unlink()
+    result = validate_workspace_on_disk(ws.path)
+    assert not result.ok
+    assert any("figures" in e for e in result.errors)
 
 
 def test_handoff_check_detects_truncated_file(tmp_path: Path) -> None:
@@ -53,9 +65,7 @@ def test_handoff_check_detects_truncated_file(tmp_path: Path) -> None:
 
 def test_lint_tags_with_empty_vocab_flags_used_tags(tmp_path: Path) -> None:
     """When viking has no tag vocabulary stored, every used tag is undeclared."""
-
     spec = _spec(tags=["unknown-tag"])
-    # Stub viking with empty store
     client = VikingClient(base_url="http://nowhere:9999", allow_stub=True, stub_dir=tmp_path / "viking-stub")
     result = lint_tags(spec, client)
     client.close()
@@ -64,8 +74,6 @@ def test_lint_tags_with_empty_vocab_flags_used_tags(tmp_path: Path) -> None:
 
 
 def test_lint_tags_passes_when_declared(tmp_path: Path) -> None:
-    """Write tags.yaml into the stub, then lint should pass."""
-
     spec = _spec(tags=["good-tag"])
     client = VikingClient(base_url="http://nowhere:9999", allow_stub=True, stub_dir=tmp_path / "viking-stub")
     client.write(
@@ -97,7 +105,6 @@ def test_seeded_tags_idempotent(tmp_path: Path) -> None:
         machine_label="x",
         workspaces_root=tmp_path / "ws",
     )
-    # Pre-populate user's own tags.yaml — seed_tags should NOT overwrite
     from cobeta.memory import viking_client_for
     client = viking_client_for(cfg)
     client.write("viking://meta/tags.yaml", "tags:\n  custom-tag:\n    description: keep me\n")
@@ -110,11 +117,10 @@ def test_seeded_tags_idempotent(tmp_path: Path) -> None:
     client.close()
     data = _yaml.safe_load(doc.full)
     assert "custom-tag" in data["tags"]
-    assert "wip" not in data["tags"]  # seed didn't run because vocab already had entries
+    assert "wip" not in data["tags"]
 
 
 def test_seeded_tags_writes_when_empty(tmp_path: Path) -> None:
-    """When viking has no tag vocabulary, the wizard should seed the 4 lifecycle tags."""
     import yaml as _yaml
     from cobeta.config import (
         LLMProviderConfig,

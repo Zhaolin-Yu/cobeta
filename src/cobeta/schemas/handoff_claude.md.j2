@@ -1,47 +1,58 @@
 # {{ spec.name }} (cobeta workspace)
 
-This directory is a **cobeta-generated ICM workspace**. You can work here with
-Claude Code as you normally would; this file is the handoff cobeta wrote so
-you immediately know what the directory means.
+This directory is a **cobeta-generated ICM workspace**. The folder layout is
+intentional, designed by a bootstrap agent that consulted your past project
+conventions. Stick to it; don't sprawl new top-level folders.
 
 ## What this workspace is
 
 > {{ spec.intent }}
 
-## Folder layout & purpose
+{% if spec.rationale -%}
+**Why this layout:** {{ spec.rationale }}
+{% endif %}
 
-| Path | Purpose |
-|---|---|
-| `./CONTEXT.md` | Layer-1 router for this workspace |
-| `./stages/<n>-<name>/CONTEXT.md` | Layer-2 contract for stage n |
-| `./stages/<n>-<name>/references/` | Stage-local Layer-3 references |
-| `./stages/<n>-<name>/output/` | Stage-local Layer-4 outputs |
-| `./references/` | Workspace-wide Layer-3 references |
+## Folder layout
 
-## Stages in this workspace
+{% macro render_cell(cell, depth=0) -%}
+{{ '  ' * depth }}- `{{ cell.name }}/` — {{ cell.purpose }}{% if cell.expected_structure %} ({{ cell.expected_structure }}){% endif %}
 
-{% for stage in spec.stages -%}
-- **`{{ stage.id }}`** — {{ stage.purpose }}
-{% endfor %}
+{% for sub in cell.sub_cells -%}
+{{ render_cell(sub, depth + 1) }}
+{%- endfor %}
+{%- endmacro -%}
+{% for cell in spec.cells -%}
+{{ render_cell(cell) }}
+{%- endfor %}
+
+Every cell folder has its own `CONTEXT.md` with declared inputs / outputs.
+Read the cell's CONTEXT.md before doing work inside it.
 
 ## Tags in scope
 
 {{ spec.tags | join(', ') if spec.tags else '(none — declare in viking://meta/tags.yaml before using)' }}
 
-## Where memory lives
+## Memory plan (where to put what)
 
-- This workspace's memory: `{{ viking_memory_uri }}`
-- User-level preferences (read often, write rarely): `viking://user/preferences/`
-- Cross-workspace concepts: `viking://resources/concepts/`
+{% if spec.memory_sections -%}
+| Topic | URI | When to write |
+|---|---|---|
+{% for m in spec.memory_sections -%}
+| {{ m.purpose }} | `{{ m.uri }}` | {{ m.write_pattern }} |
+{% endfor %}
+{%- else -%}
+All workspace memory: `{{ viking_memory_uri }}`
+{%- endif %}
 
-To query: `cobeta viking find <expr>` (or use the `viking-cli` tool directly).
+## Discipline (read before sprawling)
 
-## Default execution machine
-
-`{{ spec.machine }}` — if you're working on another machine and need artifacts
-from this one, use `cobeta exec {{ spec.machine }} -- <command>`.
+- **Never create a new top-level folder** without first amending this
+  workspace's `CONTEXT.md`. The layout is the design; ad-hoc dirs erode it.
+- When you're tempted to add `tmp/`, `misc/`, `scratch/` — instead, find which
+  existing cell that file belongs to. If none, ask the human.
+- Cross-machine: this workspace's default machine is `{{ spec.machine }}`. If
+  you need an artifact from elsewhere: `cobeta exec <other-machine> -- ...`.
 
 ---
 
-> Auto-written by cobeta {{ cobeta_version }}. Edit the workspace freely; this
-> file is regenerated only by `cobeta workspace rehandoff <path>`.
+> Auto-written by cobeta {{ cobeta_version }}.

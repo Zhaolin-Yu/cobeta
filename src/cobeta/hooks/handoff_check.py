@@ -21,10 +21,10 @@ class HandoffCheckResult:
 
 # Minimal keywords each handoff file MUST contain to count as valid.
 _REQUIRED_KEYWORDS = {
-    "CLAUDE.md": ["cobeta workspace", "Folder layout", "Stages", "memory"],
-    "AGENTS.md": ["cobeta workspace", "Folder purpose", "Stages", "Memory"],
+    "CLAUDE.md": ["cobeta workspace", "Folder layout", "Memory plan"],
+    "AGENTS.md": ["cobeta workspace", "Folder purpose", "Memory"],
     ".cursor/rules/cobeta.mdc": ["cobeta workspace"],
-    ".opencode/opencode.json": ["cobeta_workspace", "stages", "viking_memory"],
+    ".opencode/opencode.json": ["cobeta_workspace", "cells", "viking_memory_root"],
 }
 
 

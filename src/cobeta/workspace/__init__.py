@@ -2,17 +2,21 @@ from .generator import generate_workspace
 from .handoff import write_handoff_files
 from .inspector import inspect_existing_workspaces
 from .models import (
-    ContextContract,
+    Cell,
+    CellInput,
+    CellOutput,
     HandoffTarget,
-    Stage,
+    MemorySection,
     Workspace,
     WorkspaceSpec,
 )
 
 __all__ = [
-    "ContextContract",
+    "Cell",
+    "CellInput",
+    "CellOutput",
     "HandoffTarget",
-    "Stage",
+    "MemorySection",
     "Workspace",
     "WorkspaceSpec",
     "generate_workspace",

@@ -18,7 +18,7 @@ from ..workspace import (
     generate_workspace,
     inspect_existing_workspaces,
 )
-from ..workspace.models import HandoffTarget, Stage
+from ..workspace.models import Cell, HandoffTarget, MemorySection
 from .agent import Agent, AgentResult
 from .builtin_tools import bootstrap_toolset
 from .prompts import BOOTSTRAP_SYSTEM_PROMPT, installed_handoff_hint
@@ -67,6 +67,27 @@ def _ask_bool(prompt: str, default: bool = True) -> bool:
     return click.confirm(prompt, default=default)
 
 
+def _default_memory_sections(workspace_name: str, cells: list[Cell]) -> list[MemorySection]:
+    """Generate a sensible default memory plan: one section per top-level cell + decisions + timeline."""
+    base = f"viking://agent/memories/{workspace_name}"
+    sections = [
+        MemorySection(
+            uri=f"{base}/cells/{c.name}/",
+            purpose=f"Notes & decisions specific to {c.name}/",
+            write_pattern="as-needed",
+        )
+        for c in cells
+    ]
+    sections.append(
+        MemorySection(
+            uri=f"{base}/decisions/",
+            purpose="Cross-cell, non-obvious decisions worth remembering",
+            write_pattern="per-decision",
+        )
+    )
+    return sections
+
+
 # ---------- interactive (no-LLM) mode ----------
 
 
@@ -75,7 +96,11 @@ def bootstrap_interactive(
     viking: VikingClient,
     intent_seed: Optional[str] = None,
 ) -> BootstrapResult:
-    """Step the user through workspace creation via plain CLI prompts."""
+    """CLI-prompt walkthrough. No LLM required.
+
+    The interactive mode keeps the cell tree FLAT (top-level cells only, no
+    sub-cells). For richer nested layouts use LLM mode.
+    """
     import json
 
     click.secho("\ncobeta bootstrap — interactive mode", fg="cyan", bold=True)
@@ -92,30 +117,30 @@ def bootstrap_interactive(
 
     existing = inspect_existing_workspaces(cfg.workspaces_root)
     if existing:
-        click.echo("\nExisting workspaces on this machine (for reference):")
+        click.echo("\nExisting cobeta workspaces on this machine (for reference):")
         for s in existing[-5:]:
-            click.echo(f"  - {s.name:<24} stages={','.join(s.stages)}")
+            click.echo(f"  - {s.name:<24} ({s.intent[:60]})")
         click.echo("")
 
-    click.echo("Stage definition. Default 3 stages: discover → execute → integrate.")
-    if _ask_bool("Use the default 3-stage breakdown?", default=True):
-        stages = [
-            Stage(id="01-discover", name="discover", purpose="Survey, gather inputs, define success"),
-            Stage(id="02-execute", name="execute", purpose="Do the actual work"),
-            Stage(
-                id="03-integrate",
-                name="integrate",
-                purpose="Promote outputs, record learnings to viking",
-            ),
-        ]
-    else:
-        stages = []
-        n = int(_ask("How many stages?", default="3"))
-        for i in range(1, n + 1):
-            stage_name = _ask(f"Stage {i:02d} name (kebab-case)")
-            purpose = _ask(f"Stage {i:02d} purpose (one sentence)")
-            stages.append(Stage(id=f"{i:02d}-{stage_name}", name=stage_name, purpose=purpose))
+    # Cell tree — flat top-level only
+    click.echo("Cell tree (top-level folders). Default: notes, references.")
+    click.echo("Suggested for typical project: src, notes, experiments, paper")
+    cells_raw = _ask(
+        "Top-level cell names (comma-separated, kebab-case)",
+        default="notes,references",
+    )
+    cell_names = [c.strip() for c in cells_raw.split(",") if c.strip()]
+    cells: list[Cell] = []
+    for cname in cell_names:
+        purpose = _ask(f"  purpose of '{cname}/'")
+        cells.append(Cell(name=cname, purpose=purpose))
 
+    rationale = _ask(
+        "Rationale (one line: why this layout for this project; blank to skip)",
+        default="",
+    )
+
+    # Handoff defaults from PATH detection
     from ..workspace.handoff import detect_installed_handoff_targets
     available_handoffs = [
         HandoffTarget.CLAUDE_CODE,
@@ -124,16 +149,18 @@ def bootstrap_interactive(
         HandoffTarget.OPENCODE,
     ]
     installed = set(detect_installed_handoff_targets())
-    click.echo("\nHandoff files write a directory description into the agent CLI's memory file.")
+    click.echo("\nHandoff files write the workspace summary into the agent CLI's memory file.")
     if installed:
         click.echo(f"(detected on PATH: {', '.join(t.value for t in installed) or '(none)'})")
     chosen: list[HandoffTarget] = []
     for h in available_handoffs:
-        # Default-check installed CLIs; uncheck the rest.
         if _ask_bool(f"  generate handoff for {h.value}?", default=(h in installed)):
             chosen.append(h)
     if not chosen:
-        click.echo("(no handoffs selected — workspace will still work but no agent will know about it)")
+        chosen = [HandoffTarget.CLAUDE_CODE]
+
+    # Memory plan defaults
+    memory_sections = _default_memory_sections(name, cells)
 
     try:
         spec = WorkspaceSpec(
@@ -141,8 +168,10 @@ def bootstrap_interactive(
             intent=intent,
             tags=tags,
             machine=machine,
-            stages=stages,
-            handoffs=chosen or [HandoffTarget.CLAUDE_CODE],
+            cells=cells,
+            memory_sections=memory_sections,
+            handoffs=chosen,
+            rationale=rationale,
         )
     except Exception as e:
         return BootstrapResult(workspace=None, error=f"spec validation failed: {e}")
@@ -178,7 +207,7 @@ def bootstrap_with_llm(
     viking: VikingClient,
     llm: LLMProvider,
     intent_seed: Optional[str] = None,
-    max_turns: int = 20,
+    max_turns: int = 25,
 ) -> BootstrapResult:
     """Run an Agent-class-driven bootstrap loop."""
 
@@ -197,7 +226,7 @@ def bootstrap_with_llm(
     seed_msg = (
         intent_seed
         if intent_seed
-        else "Help me create a new workspace. Ask me a few questions."
+        else "Help me create a new workspace. Ask me a few questions, but first read viking inventory."
     )
     result: AgentResult = agent.run(seed_msg)
 
@@ -210,7 +239,7 @@ def bootstrap_with_llm(
     payload = result.terminal_payload
     workspace_path = Path(payload["path"])
 
-    # Reload from disk so we return a Workspace object
+    # Reload from disk
     import yaml
     audit = yaml.safe_load((workspace_path / ".cobeta.yaml").read_text(encoding="utf-8")) or {}
     spec = WorkspaceSpec.model_validate(audit.get("spec") or {})

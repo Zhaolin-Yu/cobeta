@@ -2,18 +2,24 @@
 
 > {{ spec.intent }}
 
+{% if spec.rationale -%}
+**Why this layout:** {{ spec.rationale }}
+{% endif %}
+
 ## Folder purpose
 
-- `./CONTEXT.md` — workspace router
-- `./stages/<n>-<name>/CONTEXT.md` — stage contracts
-- `./stages/<n>-<name>/{references,output}/` — stage-local L3 refs and L4 artifacts
-- `./references/` — workspace-wide L3 references
+{% macro render_cell(cell, depth=0) -%}
+{{ '  ' * depth }}- `{{ cell.name }}/` — {{ cell.purpose }}
 
-## Stages
+{% for sub in cell.sub_cells -%}
+{{ render_cell(sub, depth + 1) }}
+{%- endfor %}
+{%- endmacro -%}
+{% for cell in spec.cells -%}
+{{ render_cell(cell) }}
+{%- endfor %}
 
-{% for stage in spec.stages -%}
-- `{{ stage.id }}` — {{ stage.purpose }}
-{% endfor %}
+Every cell has its own `CONTEXT.md`. Read it before working in that cell.
 
 ## Tags
 
@@ -21,12 +27,22 @@
 
 ## Memory
 
-- Workspace memory: `{{ viking_memory_uri }}`
-- User prefs: `viking://user/preferences/`
+{% if spec.memory_sections -%}
+{% for m in spec.memory_sections -%}
+- {{ m.purpose }} → `{{ m.uri }}` ({{ m.write_pattern }})
+{% endfor %}
+{%- else -%}
+All workspace memory: `{{ viking_memory_uri }}`
+{%- endif %}
 
 ## Execution
 
 Default machine: `{{ spec.machine }}` (`cobeta exec {{ spec.machine }} -- <cmd>` from elsewhere)
+
+## Discipline
+
+Don't add new top-level folders without amending this workspace's CONTEXT.md.
+Find the cell where new content belongs. If no cell fits, ask the human.
 
 ---
 Auto-written by cobeta {{ cobeta_version }}.
